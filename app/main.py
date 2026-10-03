@@ -4,12 +4,14 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
+from app.auth_api import router as auth_router
 from app.database import engine
 from app.settings import load_settings
 
 settings = load_settings()
 
 app = FastAPI(title="ТвойВыбор.exe API")
+app.include_router(auth_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=list(settings.cors_origins),

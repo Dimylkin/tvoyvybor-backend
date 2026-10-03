@@ -3,6 +3,7 @@ from logging.config import fileConfig
 from sqlalchemy import engine_from_config, pool
 
 from alembic import context
+from app import models  # noqa: F401 - register mapped tables
 from app.database import Base
 from app.settings import load_settings
 
