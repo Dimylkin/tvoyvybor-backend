@@ -1,0 +1,24 @@
+name: Backend CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install '.[dev]'
+      - run: ruff format --check .
+      - run: ruff check .
+      - run: pytest
+        env:
+          DATABASE_URL: sqlite+pysqlite:///:memory:
+          JWT_SECRET: ci-placeholder
+          CORS_ORIGINS: http://localhost:5173
+          APP_ENV: test
