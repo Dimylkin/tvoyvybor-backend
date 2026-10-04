@@ -2,6 +2,11 @@ from sqlalchemy.exc import IntegrityError
 
 from app.content_repository import ContentRepository
 from app.models import CareerDirection, Progress, Scenario, ScenarioState, Task
+from app.task_strategy import (
+    InvalidTaskConfigError,
+    UnsupportedTaskKindError,
+    strategy_for,
+)
 
 
 class ContentNotFoundError(Exception):
@@ -83,6 +88,13 @@ class ContentService:
         if task is None:
             raise ContentNotFoundError
         if not task.is_published:
+            scenario = self.repository.scenario(task.scenario_id)
+            if scenario is None or scenario.is_published:
+                raise ContentConflictError("Published scenario content is fixed")
+            try:
+                strategy_for(task.kind).validate("", task.validation_config)
+            except (InvalidTaskConfigError, UnsupportedTaskKindError) as exc:
+                raise ContentConflictError("Task validation is not configured") from exc
             task.is_published = True
             self.repository.save()
         return task

@@ -159,6 +159,8 @@ def publish_task(task_id: int, session: SessionDep, _admin: AdminDep) -> Task:
         return service(session).publish_task(task_id)
     except ContentNotFoundError as exc:
         raise missing() from exc
+    except ContentConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.put(
