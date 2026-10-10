@@ -156,6 +156,7 @@ def test_admin_publishes_and_user_starts_scenario(content_client) -> None:
             "content": {"prompt": "Which method?"},
         }
     ]
+    assert detail["completed_task_ids"] == []
     assert "validation_config" not in str(detail)
     assert "correct_explanation" not in str(detail)
     assert "incorrect_explanation" not in str(detail)
@@ -172,6 +173,42 @@ def test_admin_publishes_and_user_starts_scenario(content_client) -> None:
     assert client.get("/progress", headers=headers(3)).json() == []
     with sessions() as session:
         assert session.query(Progress).count() == 1
+
+
+def test_scenario_detail_returns_only_successfully_completed_tasks(
+    content_client,
+) -> None:
+    client, _ = content_client
+    _, scenario_id, task_id = seed_scenario(client)
+    client.put(f"/admin/tasks/{task_id}/publish", headers=headers(1))
+    client.put(f"/admin/scenarios/{scenario_id}/publish", headers=headers(1))
+    assert (
+        client.put(f"/scenarios/{scenario_id}/start", headers=headers(2)).status_code
+        == 200
+    )
+
+    wrong = client.post(
+        f"/tasks/{task_id}/attempts",
+        headers=headers(2),
+        json={"request_id": "c47f97b9-4cf1-45f3-81f1-659fe9e93106", "answer": "POST"},
+    )
+    assert wrong.status_code == 201
+    assert (
+        client.get(f"/scenarios/{scenario_id}", headers=headers(2)).json()[
+            "completed_task_ids"
+        ]
+        == []
+    )
+
+    correct = client.post(
+        f"/tasks/{task_id}/attempts",
+        headers=headers(2),
+        json={"request_id": "fd18e062-5d4d-4193-8776-20f6a565f7dd", "answer": "GET"},
+    )
+    assert correct.status_code == 201
+    assert client.get(f"/scenarios/{scenario_id}", headers=headers(2)).json()[
+        "completed_task_ids"
+    ] == [task_id]
 
 
 def test_draft_task_hidden_and_locked_progress_cannot_start(content_client) -> None:

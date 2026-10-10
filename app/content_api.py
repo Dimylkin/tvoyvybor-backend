@@ -91,6 +91,7 @@ class ScenarioOutput(BaseModel):
 
 class ScenarioDetail(ScenarioOutput):
     tasks: list[TaskOutput]
+    completed_task_ids: list[int]
 
 
 class ProgressOutput(BaseModel):
@@ -214,6 +215,9 @@ def scenario_detail(
     return ScenarioDetail(
         **data.model_dump(),
         tasks=[TaskOutput.model_validate(task, from_attributes=True) for task in tasks],
+        completed_task_ids=ContentRepository(session).completed_task_ids(
+            user.id, scenario_id
+        ),
     )
 
 
