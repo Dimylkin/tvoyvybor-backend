@@ -3,7 +3,7 @@ from typing import TypeVar
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import CareerDirection, Progress, Scenario, Task
+from app.models import CareerDirection, Progress, Scenario, Task, TaskAttempt
 
 ContentEntity = TypeVar("ContentEntity", CareerDirection, Scenario, Task, Progress)
 
@@ -52,6 +52,21 @@ class ContentRepository:
         if published_only:
             statement = statement.where(Task.is_published.is_(True))
         return list(self.session.scalars(statement.order_by(Task.id)))
+
+    def completed_task_ids(self, user_id: int, scenario_id: int) -> list[int]:
+        statement = (
+            select(TaskAttempt.task_id)
+            .join(Task, Task.id == TaskAttempt.task_id)
+            .where(
+                TaskAttempt.user_id == user_id,
+                TaskAttempt.is_correct.is_(True),
+                Task.scenario_id == scenario_id,
+                Task.is_published.is_(True),
+            )
+            .distinct()
+            .order_by(TaskAttempt.task_id)
+        )
+        return list(self.session.scalars(statement))
 
     def progress(self, user_id: int, scenario_id: int) -> Progress | None:
         return self.session.scalar(
