@@ -110,6 +110,129 @@ class ContentService:
             self.repository.save()
         return scenario
 
+    def update_scenario(
+        self,
+        scenario_id: int,
+        direction_id: int,
+        slug: str,
+        title: str,
+        description: str,
+    ) -> Scenario:
+        scenario = self.repository.scenario(scenario_id)
+        if scenario is None:
+            raise ContentNotFoundError
+        if scenario.is_published:
+            raise ContentConflictError("Published scenario content is fixed")
+        if self.repository.direction(direction_id) is None:
+            raise ContentNotFoundError
+        scenario.direction_id = direction_id
+        scenario.slug = slug
+        scenario.title = title
+        scenario.description = description
+        try:
+            self.repository.save()
+        except IntegrityError as exc:
+            self.repository.session.rollback()
+            raise ContentConflictError("Scenario slug already exists") from exc
+        return scenario
+
+    def delete_scenario(self, scenario_id: int) -> None:
+        scenario = self.repository.scenario(scenario_id)
+        if scenario is None:
+            raise ContentNotFoundError
+        if scenario.is_published or self._scenario_consumed(scenario_id):
+            raise ContentConflictError("Consumed scenario content cannot be deleted")
+        for task in self.repository.tasks(scenario_id, published_only=False):
+            self.repository.session.delete(task)
+        self.repository.delete(scenario)
+
+    def unpublish_scenario(self, scenario_id: int) -> Scenario:
+        scenario = self.repository.scenario(scenario_id)
+        if scenario is None:
+            raise ContentNotFoundError
+        if self._scenario_consumed(scenario_id):
+            raise ContentConflictError(
+                "Consumed scenario content cannot be unpublished"
+            )
+        if scenario.is_published:
+            scenario.is_published = False
+            for task in self.repository.tasks(scenario_id, published_only=False):
+                task.is_published = False
+            self.repository.save()
+        return scenario
+
+    def update_task(
+        self,
+        task_id: int,
+        kind: str,
+        title: str,
+        content: dict,
+        validation_config: dict,
+        correct_explanation: str,
+        incorrect_explanation: str,
+    ) -> Task:
+        task = self.repository.task(task_id)
+        if task is None:
+            raise ContentNotFoundError
+        scenario = self.repository.scenario(task.scenario_id)
+        if scenario is None:
+            raise ContentNotFoundError
+        if (
+            task.is_published
+            or scenario.is_published
+            or self.repository.task_has_attempts(task_id)
+        ):
+            raise ContentConflictError("Published task content is fixed")
+        self._validate_task(kind, validation_config)
+        task.kind = kind
+        task.title = title
+        task.content = content
+        task.validation_config = validation_config
+        task.correct_explanation = correct_explanation
+        task.incorrect_explanation = incorrect_explanation
+        self.repository.save()
+        return task
+
+    def delete_task(self, task_id: int) -> None:
+        task = self.repository.task(task_id)
+        if task is None:
+            raise ContentNotFoundError
+        scenario = self.repository.scenario(task.scenario_id)
+        if scenario is None:
+            raise ContentNotFoundError
+        if (
+            task.is_published
+            or scenario.is_published
+            or self.repository.task_has_attempts(task_id)
+        ):
+            raise ContentConflictError("Published task content is fixed")
+        self.repository.delete(task)
+
+    def unpublish_task(self, task_id: int) -> Task:
+        task = self.repository.task(task_id)
+        if task is None:
+            raise ContentNotFoundError
+        scenario = self.repository.scenario(task.scenario_id)
+        if scenario is None:
+            raise ContentNotFoundError
+        if scenario.is_published or self.repository.task_has_attempts(task_id):
+            raise ContentConflictError("Consumed task content cannot be unpublished")
+        if task.is_published:
+            task.is_published = False
+            self.repository.save()
+        return task
+
+    def _validate_task(self, kind: str, validation_config: dict) -> None:
+        try:
+            strategy_for(kind).validate("", validation_config)
+        except (InvalidTaskConfigError, UnsupportedTaskKindError) as exc:
+            raise ContentConflictError("Task validation is not configured") from exc
+
+    def _scenario_consumed(self, scenario_id: int) -> bool:
+        return self.repository.scenario_has_progress(
+            scenario_id
+        ) or self.repository.scenario_has_attempts(scenario_id)
+
     def published_scenario(self, scenario_id: int) -> Scenario:
         scenario = self.repository.scenario(scenario_id)
         if scenario is None or not scenario.is_published:

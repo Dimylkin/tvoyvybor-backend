@@ -21,6 +21,10 @@ class ContentRepository:
     def save(self) -> None:
         self.session.commit()
 
+    def delete(self, entity: ContentEntity) -> None:
+        self.session.delete(entity)
+        self.session.commit()
+
     def direction(self, direction_id: int) -> CareerDirection | None:
         return self.session.get(CareerDirection, direction_id)
 
@@ -46,6 +50,9 @@ class ContentRepository:
         if direction_id is not None:
             statement = statement.where(Scenario.direction_id == direction_id)
         return list(self.session.scalars(statement.order_by(Scenario.id)))
+
+    def scenarios(self) -> list[Scenario]:
+        return list(self.session.scalars(select(Scenario).order_by(Scenario.id)))
 
     def tasks(self, scenario_id: int, *, published_only: bool) -> list[Task]:
         statement = select(Task).where(Task.scenario_id == scenario_id)
@@ -83,4 +90,30 @@ class ContentRepository:
                 .where(Progress.user_id == user_id)
                 .order_by(Progress.id)
             )
+        )
+
+    def scenario_has_progress(self, scenario_id: int) -> bool:
+        return (
+            self.session.scalar(
+                select(Progress.id).where(Progress.scenario_id == scenario_id)
+            )
+            is not None
+        )
+
+    def task_has_attempts(self, task_id: int) -> bool:
+        return (
+            self.session.scalar(
+                select(TaskAttempt.id).where(TaskAttempt.task_id == task_id)
+            )
+            is not None
+        )
+
+    def scenario_has_attempts(self, scenario_id: int) -> bool:
+        return (
+            self.session.scalar(
+                select(TaskAttempt.id)
+                .join(Task, Task.id == TaskAttempt.task_id)
+                .where(Task.scenario_id == scenario_id)
+            )
+            is not None
         )

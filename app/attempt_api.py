@@ -10,6 +10,7 @@ from app.attempt_service import (
     AttemptConflictError,
     AttemptNotFoundError,
     AttemptService,
+    final_report,
 )
 from app.auth_api import current_user
 from app.database import get_session
@@ -58,6 +59,21 @@ class AchievementOutput(BaseModel):
     slug: str
     title: str
     description: str
+
+
+class FinalReportDirectionOutput(BaseModel):
+    direction_id: int
+    title: str
+    score: int
+    reason: str
+
+
+class FinalReportOutput(BaseModel):
+    event_count: int
+    completed_task_count: int
+    directions: list[FinalReportDirectionOutput]
+    observations: list[str]
+    next_steps: list[str]
 
 
 @router.post("/tasks/{task_id}/attempts", response_model=AttemptOutput, status_code=201)
@@ -116,3 +132,23 @@ def achievements(session: SessionDep, user: UserDep) -> list[AchievementOutput]:
         AchievementOutput.model_validate(item, from_attributes=True)
         for _, item in AttemptRepository(session).user_achievements(user.id)
     ]
+
+
+@router.get("/final-report", response_model=FinalReportOutput)
+def get_final_report(session: SessionDep, user: UserDep) -> FinalReportOutput:
+    report = final_report(AttemptRepository(session).events_with_directions(user.id))
+    return FinalReportOutput(
+        event_count=report.event_count,
+        completed_task_count=report.completed_task_count,
+        directions=[
+            FinalReportDirectionOutput(
+                direction_id=item.direction_id,
+                title=item.title,
+                score=item.score,
+                reason=item.reason,
+            )
+            for item in report.directions
+        ],
+        observations=report.observations,
+        next_steps=report.next_steps,
+    )
