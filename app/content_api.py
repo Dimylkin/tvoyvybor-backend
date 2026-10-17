@@ -140,6 +140,47 @@ def create_scenario(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
+@router.get("/admin/scenarios", response_model=list[ScenarioAdminOutput])
+def admin_scenarios(session: SessionDep, _admin: AdminDep) -> list[Scenario]:
+    return ContentRepository(session).scenarios()
+
+
+@router.put("/admin/scenarios/{scenario_id}", response_model=ScenarioAdminOutput)
+def update_scenario(
+    scenario_id: int, data: ScenarioInput, session: SessionDep, _admin: AdminDep
+) -> Scenario:
+    try:
+        return service(session).update_scenario(scenario_id, **data.model_dump())
+    except ContentNotFoundError as exc:
+        raise missing() from exc
+    except ContentConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.delete("/admin/scenarios/{scenario_id}", status_code=204)
+def delete_scenario(scenario_id: int, session: SessionDep, _admin: AdminDep) -> None:
+    try:
+        service(session).delete_scenario(scenario_id)
+    except ContentNotFoundError as exc:
+        raise missing() from exc
+    except ContentConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.put(
+    "/admin/scenarios/{scenario_id}/unpublish", response_model=ScenarioAdminOutput
+)
+def unpublish_scenario(
+    scenario_id: int, session: SessionDep, _admin: AdminDep
+) -> Scenario:
+    try:
+        return service(session).unpublish_scenario(scenario_id)
+    except ContentNotFoundError as exc:
+        raise missing() from exc
+    except ContentConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @router.post(
     "/admin/scenarios/{scenario_id}/tasks",
     response_model=TaskAdminOutput,
@@ -154,10 +195,51 @@ def create_task(
         raise missing() from exc
 
 
+@router.get(
+    "/admin/scenarios/{scenario_id}/tasks", response_model=list[TaskAdminOutput]
+)
+def admin_tasks(scenario_id: int, session: SessionDep, _admin: AdminDep) -> list[Task]:
+    if ContentRepository(session).scenario(scenario_id) is None:
+        raise missing()
+    return ContentRepository(session).tasks(scenario_id, published_only=False)
+
+
+@router.put("/admin/tasks/{task_id}", response_model=TaskAdminOutput)
+def update_task(
+    task_id: int, data: TaskInput, session: SessionDep, _admin: AdminDep
+) -> Task:
+    try:
+        return service(session).update_task(task_id, **data.model_dump())
+    except ContentNotFoundError as exc:
+        raise missing() from exc
+    except ContentConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.delete("/admin/tasks/{task_id}", status_code=204)
+def delete_task(task_id: int, session: SessionDep, _admin: AdminDep) -> None:
+    try:
+        service(session).delete_task(task_id)
+    except ContentNotFoundError as exc:
+        raise missing() from exc
+    except ContentConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @router.put("/admin/tasks/{task_id}/publish", response_model=TaskAdminOutput)
 def publish_task(task_id: int, session: SessionDep, _admin: AdminDep) -> Task:
     try:
         return service(session).publish_task(task_id)
+    except ContentNotFoundError as exc:
+        raise missing() from exc
+    except ContentConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.put("/admin/tasks/{task_id}/unpublish", response_model=TaskAdminOutput)
+def unpublish_task(task_id: int, session: SessionDep, _admin: AdminDep) -> Task:
+    try:
+        return service(session).unpublish_task(task_id)
     except ContentNotFoundError as exc:
         raise missing() from exc
     except ContentConflictError as exc:

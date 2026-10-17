@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.attempt_repository import AttemptRepository
 from app.content_repository import ContentRepository
 from app.models import (
+    CareerDirection,
     InterestEvent,
     InterestProfile,
     Recommendation,
@@ -41,10 +42,83 @@ class AttemptResult:
     scenario_state: ScenarioState
 
 
+@dataclass(frozen=True)
+class ReportDirection:
+    direction_id: int
+    title: str
+    score: int
+    reason: str
+
+
+@dataclass(frozen=True)
+class FinalReport:
+    event_count: int
+    completed_task_count: int
+    directions: list[ReportDirection]
+    observations: list[str]
+    next_steps: list[str]
+
+
 def leading_direction(scores: dict[str, int]) -> int | None:
     if not scores:
         return None
     return min((int(key) for key in scores), key=lambda key: (-scores[str(key)], key))
+
+
+def final_report(
+    events: list[tuple[InterestEvent, CareerDirection]],
+) -> FinalReport:
+    """Build an explainable result from persisted interest evidence only."""
+    completed = [event for event, _ in events if event.source == "task_completed"]
+    scores: dict[int, int] = {}
+    titles: dict[int, str] = {}
+    for event, direction in events:
+        titles[event.direction_id] = direction.title
+        if event.source == "task_completed":
+            scores[event.direction_id] = (
+                scores.get(event.direction_id, 0) + event.weight
+            )
+
+    directions = [
+        ReportDirection(
+            direction_id=direction_id,
+            title=titles[direction_id],
+            score=score,
+            reason=f"Верно выполнено заданий в направлении: {score}.",
+        )
+        for direction_id, score in sorted(
+            scores.items(), key=lambda item: (-item[1], item[0])
+        )[:3]
+    ]
+    if not events:
+        return FinalReport(
+            event_count=0,
+            completed_task_count=0,
+            directions=[],
+            observations=[
+                "Пока нет попыток: отчёт появится после прохождения заданий."
+            ],
+            next_steps=[
+                "Откройте любой доступный сценарий и выполните первое задание."
+            ],
+        )
+
+    observations = [f"Зафиксировано попыток: {len(events)}."]
+    if completed:
+        observations.append(f"Верно выполнено заданий: {len(completed)}.")
+    else:
+        observations.append("Верных ответов пока нет, но попытки уже сохранены.")
+    if directions:
+        next_steps = [f"Продолжите изучать направление «{directions[0].title}»."]
+    else:
+        next_steps = ["Попробуйте ответить на задание ещё раз после объяснения."]
+    return FinalReport(
+        event_count=len(events),
+        completed_task_count=len(completed),
+        directions=directions,
+        observations=observations,
+        next_steps=next_steps,
+    )
 
 
 class AttemptService:

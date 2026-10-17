@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     Achievement,
+    CareerDirection,
     InterestEvent,
     InterestProfile,
     Progress,
@@ -96,6 +97,18 @@ class AttemptRepository:
         return list(
             self.session.scalars(
                 select(InterestEvent)
+                .where(InterestEvent.user_id == user_id)
+                .order_by(InterestEvent.id)
+            )
+        )
+
+    def events_with_directions(
+        self, user_id: int
+    ) -> list[tuple[InterestEvent, CareerDirection]]:
+        return list(
+            self.session.execute(
+                select(InterestEvent, CareerDirection)
+                .join(CareerDirection, CareerDirection.id == InterestEvent.direction_id)
                 .where(InterestEvent.user_id == user_id)
                 .order_by(InterestEvent.id)
             )

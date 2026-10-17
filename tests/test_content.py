@@ -309,3 +309,125 @@ def test_invalid_content_and_missing_resources(content_client) -> None:
     assert (
         client.get(f"/scenarios/{scenario_id}", headers=headers(2)).status_code == 404
     )
+
+
+def test_admin_edits_lists_and_removes_unconsumed_draft_content(content_client) -> None:
+    client, _ = content_client
+    assert client.get("/admin/scenarios").status_code == 401
+    assert client.get("/admin/scenarios", headers=headers(2)).status_code == 403
+    direction_id, scenario_id, task_id = seed_scenario(client)
+
+    scenarios = client.get("/admin/scenarios", headers=headers(1))
+    assert scenarios.status_code == 200
+    assert scenarios.json() == [
+        {
+            "id": scenario_id,
+            "direction_id": direction_id,
+            "slug": "first-api",
+            "title": "First API",
+            "description": "Build an endpoint",
+            "is_published": False,
+        }
+    ]
+    updated = client.put(
+        f"/admin/scenarios/{scenario_id}",
+        headers=headers(1),
+        json={
+            "direction_id": direction_id,
+            "slug": "edited-api",
+            "title": "Edited API",
+            "description": "Updated description",
+        },
+    )
+    assert updated.status_code == 200
+    assert updated.json()["title"] == "Edited API"
+    assert (
+        client.get(f"/admin/scenarios/{scenario_id}/tasks", headers=headers(1)).json()[
+            0
+        ]["id"]
+        == task_id
+    )
+    task = client.put(
+        f"/admin/tasks/{task_id}",
+        headers=headers(1),
+        json={
+            "kind": "choice",
+            "title": "Edited task",
+            "content": {"prompt": "Edited?"},
+            "validation_config": {"correct": "yes"},
+            "correct_explanation": "Yes is correct",
+            "incorrect_explanation": "Try again",
+        },
+    )
+    assert task.status_code == 200
+    assert task.json()["title"] == "Edited task"
+    assert (
+        client.delete(f"/admin/tasks/{task_id}", headers=headers(1)).status_code == 204
+    )
+    assert (
+        client.delete(f"/admin/scenarios/{scenario_id}", headers=headers(1)).status_code
+        == 204
+    )
+    assert client.get("/admin/scenarios", headers=headers(1)).json() == []
+
+
+def test_admin_cannot_change_published_or_consumed_content(content_client) -> None:
+    client, _ = content_client
+    direction_id, scenario_id, task_id = seed_scenario(client)
+    assert (
+        client.put(f"/admin/tasks/{task_id}/publish", headers=headers(1)).status_code
+        == 200
+    )
+    assert (
+        client.put(
+            f"/admin/scenarios/{scenario_id}/publish", headers=headers(1)
+        ).status_code
+        == 200
+    )
+
+    update = client.put(
+        f"/admin/scenarios/{scenario_id}",
+        headers=headers(1),
+        json={
+            "direction_id": direction_id,
+            "slug": "renamed-api",
+            "title": "Renamed API",
+            "description": "Changed",
+        },
+    )
+    assert update.status_code == 409
+    assert (
+        client.delete(f"/admin/scenarios/{scenario_id}", headers=headers(1)).status_code
+        == 409
+    )
+    assert (
+        client.put(
+            f"/admin/scenarios/{scenario_id}/unpublish", headers=headers(1)
+        ).status_code
+        == 200
+    )
+    assert client.get("/scenarios", headers=headers(2)).json() == []
+
+    assert (
+        client.put(f"/admin/tasks/{task_id}/publish", headers=headers(1)).status_code
+        == 200
+    )
+    assert (
+        client.put(
+            f"/admin/scenarios/{scenario_id}/publish", headers=headers(1)
+        ).status_code
+        == 200
+    )
+    assert (
+        client.put(f"/scenarios/{scenario_id}/start", headers=headers(2)).status_code
+        == 200
+    )
+    assert (
+        client.put(
+            f"/admin/scenarios/{scenario_id}/unpublish", headers=headers(1)
+        ).status_code
+        == 409
+    )
+    assert (
+        client.delete(f"/admin/tasks/{task_id}", headers=headers(1)).status_code == 409
+    )

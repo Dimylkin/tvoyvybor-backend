@@ -458,3 +458,42 @@ def test_malformed_attempt_is_rejected_without_side_effects(
         "direction_scores": {},
         "event_count": 0,
     }
+
+
+def test_final_report_uses_only_current_users_persisted_interest_events(
+    attempt_client,
+) -> None:
+    client, _ = attempt_client
+    assert client.get("/final-report").status_code == 401
+    assert client.get("/final-report", headers=auth(3)).json() == {
+        "event_count": 0,
+        "completed_task_count": 0,
+        "directions": [],
+        "observations": ["Пока нет попыток: отчёт появится после прохождения заданий."],
+        "next_steps": ["Откройте любой доступный сценарий и выполните первое задание."],
+    }
+    direction_id, scenario_id, task_id = create_scenario(client)
+    publish_and_start(client, scenario_id, task_id)
+    assert submit(client, task_id, "POST").status_code == 201
+    assert submit(client, task_id, "GET").status_code == 201
+
+    report = client.get("/final-report", headers=auth(2))
+    assert report.status_code == 200
+    assert report.json() == {
+        "event_count": 2,
+        "completed_task_count": 1,
+        "directions": [
+            {
+                "direction_id": direction_id,
+                "title": "Backend",
+                "score": 1,
+                "reason": "Верно выполнено заданий в направлении: 1.",
+            }
+        ],
+        "observations": [
+            "Зафиксировано попыток: 2.",
+            "Верно выполнено заданий: 1.",
+        ],
+        "next_steps": ["Продолжите изучать направление «Backend»."],
+    }
+    assert client.get("/final-report", headers=auth(3)).json()["event_count"] == 0
