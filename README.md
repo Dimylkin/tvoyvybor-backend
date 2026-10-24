@@ -47,8 +47,10 @@ API принимает JSON. `POST /auth/register` с `{"email":"user@example.co
 `POST /auth/login` принимает те же поля и возвращает HTTP 200 с
 `access_token` и `token_type: "bearer"`. Неверные учётные данные дают 401.
 `GET /auth/me` требует заголовок `Authorization: Bearer <access_token>` и
-возвращает `id`, `email`, `role`; отсутствие или недействительность токена дают
-401. Access JWT подписывается HS256 секретом `JWT_SECRET` и действует 1 час.
+возвращает `id`, `email`, `role`, `onboarding_completed`; отсутствие или
+недействительность токена дают 401. `PUT /auth/me/onboarding-complete` с тем же
+JWT идемпотентно отмечает вступление в кампус просмотренным. Access JWT
+подписывается HS256 секретом `JWT_SECRET` и действует 1 час.
 Refresh token на этом этапе не нужен. Пароли хранятся в виде PBKDF2-SHA256
 с индивидуальной солью; публичная регистрация всегда присваивает роль `user`.
 Роль `admin` проверяется на сервере по текущей записи пользователя в БД.

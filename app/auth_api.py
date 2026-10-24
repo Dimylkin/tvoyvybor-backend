@@ -42,6 +42,7 @@ class UserResponse(BaseModel):
     id: int
     email: str
     role: UserRole
+    onboarding_completed: bool
 
 
 class TokenResponse(BaseModel):
@@ -94,4 +95,16 @@ def login(data: LoginCredentials, session: SessionDep) -> TokenResponse:
 
 @router.get("/me", response_model=UserResponse)
 def me(user: Annotated[User, Depends(current_user)]) -> User:
+    return user
+
+
+@router.put("/me/onboarding-complete", response_model=UserResponse)
+def complete_onboarding(
+    user: Annotated[User, Depends(current_user)], session: SessionDep
+) -> User:
+    """Mark the account-level introduction as seen; repeated calls are safe."""
+    if not user.onboarding_completed:
+        user.onboarding_completed = True
+        session.commit()
+        session.refresh(user)
     return user
