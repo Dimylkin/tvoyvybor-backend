@@ -46,7 +46,12 @@ def test_register_login_and_me(auth_client) -> None:
     )
     assert registration.status_code == 201
     user = registration.json()
-    assert user == {"id": 1, "email": "alice@example.com", "role": "user"}
+    assert user == {
+        "id": 1,
+        "email": "alice@example.com",
+        "role": "user",
+        "onboarding_completed": False,
+    }
 
     with sessions() as session:
         stored = session.get(User, user["id"])
@@ -63,6 +68,15 @@ def test_register_login_and_me(auth_client) -> None:
     me = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
     assert me.status_code == 200
     assert me.json() == user
+
+    completed = client.put(
+        "/auth/me/onboarding-complete", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert completed.status_code == 200
+    assert completed.json() == {**user, "onboarding_completed": True}
+    assert client.put(
+        "/auth/me/onboarding-complete", headers={"Authorization": f"Bearer {token}"}
+    ).json() == completed.json()
 
 
 def test_duplicate_bad_password_and_public_role(auth_client) -> None:
