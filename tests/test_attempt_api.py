@@ -469,8 +469,10 @@ def test_final_report_uses_only_current_users_persisted_interest_events(
         "event_count": 0,
         "completed_task_count": 0,
         "directions": [],
-        "observations": ["Пока нет попыток: отчёт появится после прохождения заданий."],
-        "next_steps": ["Откройте любой доступный сценарий и выполните первое задание."],
+        "observations": ["Исторических данных старых заданий пока нет."],
+        "next_steps": [
+            "Исследуйте кампус и попробуйте задания, которые вам интересны."
+        ],
     }
     direction_id, scenario_id, task_id = create_scenario(client)
     publish_and_start(client, scenario_id, task_id)
