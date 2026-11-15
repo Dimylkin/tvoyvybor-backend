@@ -74,9 +74,12 @@ def test_register_login_and_me(auth_client) -> None:
     )
     assert completed.status_code == 200
     assert completed.json() == {**user, "onboarding_completed": True}
-    assert client.put(
-        "/auth/me/onboarding-complete", headers={"Authorization": f"Bearer {token}"}
-    ).json() == completed.json()
+    assert (
+        client.put(
+            "/auth/me/onboarding-complete", headers={"Authorization": f"Bearer {token}"}
+        ).json()
+        == completed.json()
+    )
 
 
 def test_duplicate_bad_password_and_public_role(auth_client) -> None:
