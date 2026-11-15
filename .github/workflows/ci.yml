@@ -22,3 +22,33 @@ jobs:
           JWT_SECRET: ci-placeholder
           CORS_ORIGINS: http://localhost:5173
           APP_ENV: test
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: backend
+          POSTGRES_PASSWORD: backend
+          POSTGRES_DB: backend_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://backend:backend@localhost:5432/backend_test
+      TEST_POSTGRES_URL: postgresql+psycopg://backend:backend@localhost:5432/backend_test
+      JWT_SECRET: ci-placeholder
+      CORS_ORIGINS: http://localhost:5173
+      APP_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install '.[dev]'
+      - run: alembic upgrade head
+      - run: pytest -q tests/test_postgres_serialization.py

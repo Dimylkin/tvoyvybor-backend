@@ -5,7 +5,6 @@ import json
 from copy import deepcopy
 from datetime import UTC, datetime
 
-from fastapi import HTTPException
 from sqlalchemy import select
 
 from app.models import (
@@ -17,6 +16,8 @@ from app.models import (
     UserAchievement,
 )
 from app.quest_catalog import REWARDS
+from app.quest_dtos import AwardResult, GameActionResult
+from app.quest_errors import QuestError
 from app.quest_models import PlayerQuestObjective, QuestEvent, TrackedQuest, now
 from app.quest_python import check_code
 
@@ -186,7 +187,7 @@ def state_for(service, quest):
 
 def require(condition, message="Сначала завершите предыдущий этап"):
     if not condition:
-        raise HTTPException(409, message)
+        raise QuestError(409, message)
 
 
 def transition(kind, state, action, payload):
@@ -654,7 +655,7 @@ def award(service, slug):
     service.session.add(
         UserAchievement(user_id=service.user_id, achievement_id=achievement.id)
     )
-    return {"slug": slug, "title": title, "description": description}
+    return AwardResult(slug=slug, title=title, description=description)
 
 
 def act(service, quest_id, request_id, action, payload):
@@ -670,7 +671,10 @@ def act(service, quest_id, request_id, action, payload):
             == ("minigame_action", target, content),
             "Request ID has different content",
         )
-        return previous.result
+        return GameActionResult(
+            state=previous.result["state"],
+            awards=[AwardResult(**item) for item in previous.result["awards"]],
+        )
     player = service.repo.player(service.user_id, quest.id)
     require(player and player.status == "active", "Примите задание у NPC")
     state = state_for(service, quest)
@@ -708,7 +712,7 @@ def act(service, quest_id, request_id, action, payload):
                 )
             )
     awarded = [item for slug in rewards if (item := award(service, slug))]
-    result = {"state": new, "awards": awarded}
+    result = GameActionResult(state=new, awards=awarded)
     service.session.add(
         QuestEvent(
             user_id=service.user_id,
@@ -716,7 +720,17 @@ def act(service, quest_id, request_id, action, payload):
             event_type="minigame_action",
             target_key=target,
             payload=content,
-            result=result,
+            result={
+                "state": result.state,
+                "awards": [
+                    {
+                        "slug": item.slug,
+                        "title": item.title,
+                        "description": item.description,
+                    }
+                    for item in result.awards
+                ],
+            },
         )
     )
     service.session.commit()

@@ -404,10 +404,11 @@ def test_composed_solution_requires_evidence_and_accepts_wrong_attempts():
         "delivery": "friday-director",
         "data": "paid-csv",
     }
-    from fastapi import HTTPException
+    from app.quest_errors import QuestError
 
-    with pytest.raises(HTTPException):
+    with pytest.raises(QuestError) as error:
         transition("interview", state, "compose", {"value": json.dumps(correct)})
+    assert error.value.status_code == 409
     for question in ("bigger", "place", "color", "why", "after", "frequency"):
         state, _ = transition("interview", state, "question", {"value": question})
     assert state["interview_history"] == [
@@ -444,19 +445,19 @@ def test_code_debrief_preserves_player_answer(answer):
 
 
 def test_assistant_only_accepts_prepared_questions_and_preserves_subject():
-    from fastapi import HTTPException
-
+    from app.quest_errors import QuestError
     from app.quest_gameplay import ASSISTANT_QUESTIONS
 
     state = {**initial_state(), "stage": "mini-game"}
     for key in ("123123", "как дела", "", None):
-        with pytest.raises(HTTPException):
+        with pytest.raises(QuestError) as error:
             transition("code", state, "assistant-question", {"key": key})
+        assert error.value.status_code == 409
     for key in ASSISTANT_QUESTIONS:
         state, _ = transition("code", state, "assistant-question", {"key": key})
     assert set(state["assistant_questions"]) == ASSISTANT_QUESTIONS
     assert state["example_shown"]
     state, _ = transition("code", state, "use-example", {})
     assert state["example_used"]
-    with pytest.raises(HTTPException):
+    with pytest.raises(QuestError):
         transition("diagnosis", state, "assistant-question", {"key": "none"})

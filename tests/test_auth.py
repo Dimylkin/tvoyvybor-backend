@@ -51,6 +51,8 @@ def test_register_login_and_me(auth_client) -> None:
         "email": "alice@example.com",
         "role": "user",
         "onboarding_completed": False,
+        "intro_completed": False,
+        "main_story_completed": False,
     }
 
     with sessions() as session:

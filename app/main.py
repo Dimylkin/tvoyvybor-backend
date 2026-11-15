@@ -1,5 +1,6 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
@@ -9,6 +10,7 @@ from app.auth_api import router as auth_router
 from app.content_api import router as content_router
 from app.database import engine
 from app.quest_api import router as quest_router
+from app.quest_errors import QuestError
 from app.settings import load_settings
 from app.story_api import router as story_router
 
@@ -20,6 +22,16 @@ app.include_router(content_router)
 app.include_router(attempt_router)
 app.include_router(quest_router)
 app.include_router(story_router)
+
+
+@app.exception_handler(QuestError)
+def quest_error_response(request: Request, exc: QuestError) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+    )
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=list(settings.cors_origins),
