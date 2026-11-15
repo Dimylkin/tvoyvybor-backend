@@ -40,6 +40,7 @@ class QuestOutput(BaseModel):
     completed_at: datetime | None
     tracked: bool
     objectives: list[ObjectiveOutput]
+    gameplay: dict | None = None
 
 
 class ObjectiveChange(BaseModel):
@@ -126,3 +127,31 @@ def interact(data: InteractionInput, session: SessionDep, user: UserDep):
 @router.post("/game/backend-terminal", response_model=TerminalOutput)
 def terminal(data: TerminalInput, session: SessionDep, user: UserDep):
     return QuestService(session, user.id).terminal(str(data.request_id))
+
+
+class GamePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    value: str | None = Field(default=None, max_length=4000)
+    key: str | None = Field(default=None, max_length=40)
+
+
+class GameActionInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request_id: UUID
+    action: str = Field(min_length=1, max_length=40)
+    payload: GamePayload = Field(default_factory=GamePayload)
+
+
+@router.post("/quests/{quest_id}/actions")
+def game_action(
+    quest_id: int, data: GameActionInput, session: SessionDep, user: UserDep
+):
+    from app.quest_gameplay import act
+
+    return act(
+        QuestService(session, user.id),
+        quest_id,
+        str(data.request_id),
+        data.action,
+        data.payload.model_dump(exclude_none=True),
+    )

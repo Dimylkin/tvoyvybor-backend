@@ -1,10 +1,13 @@
+from uuid import uuid4
+
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.quest_models import (
     PlayerQuest,
     PlayerQuestObjective,
+    QuestDefinition,
     QuestEvent,
     TrackedQuest,
     now,
@@ -41,7 +44,17 @@ class QuestService:
         player = self.repo.player(self.user_id, quest.id)
         progress = self.repo.progress(player.id) if player else {}
         tracked = self.session.get(TrackedQuest, self.user_id)
+        from app.quest_gameplay import state_for
+
         return {
+            "gameplay": (
+                {
+                    "kind": quest.availability_config["kind"],
+                    "state": state_for(self, quest),
+                }
+                if quest.availability_config.get("engine") == 2
+                else None
+            ),
             "id": quest.id,
             "slug": quest.slug,
             "title": quest.title,
@@ -101,6 +114,27 @@ class QuestService:
             return self.view(quest)
         if player.status not in ("offered", "abandoned"):
             raise HTTPException(409, "Quest cannot be accepted")
+        if quest.category == "professional":
+            other = self.session.scalar(
+                select(QuestDefinition.title)
+                .join(PlayerQuest, PlayerQuest.quest_id == QuestDefinition.id)
+                .where(
+                    PlayerQuest.user_id == self.user_id,
+                    PlayerQuest.status == "active",
+                    QuestDefinition.giver_npc_id == quest.giver_npc_id,
+                    QuestDefinition.category == "professional",
+                    QuestDefinition.id != quest.id,
+                )
+            )
+            if other:
+                raise HTTPException(
+                    409, f"Сначала завершите дело этого наставника: {other}"
+                )
+        if (
+            player.status == "abandoned"
+            and quest.availability_config.get("engine") == 2
+        ):
+            player.accepted_at = None
         player.status = "active"
         player.accepted_at = player.accepted_at or now()
         player.abandoned_at = None
@@ -119,6 +153,24 @@ class QuestService:
             raise HTTPException(409, "Quest cannot be abandoned")
         if player.status == "active":
             player.status, player.abandoned_at = "abandoned", now()
+            if quest.availability_config.get("engine") == 2:
+                from app.quest_gameplay import initial_state
+
+                self.session.execute(
+                    delete(PlayerQuestObjective).where(
+                        PlayerQuestObjective.player_quest_id == player.id
+                    )
+                )
+                self.session.add(
+                    QuestEvent(
+                        user_id=self.user_id,
+                        request_id=str(uuid4()),
+                        event_type="minigame_reset",
+                        target_key=f"quest:{quest.id}",
+                        payload={},
+                        result={"state": initial_state()},
+                    )
+                )
             tracked = self.session.get(TrackedQuest, self.user_id)
             if tracked and tracked.player_quest_id == player.id:
                 self.session.delete(tracked)
@@ -208,7 +260,11 @@ class QuestService:
         changed = []
         for quest in self.repo.definitions():
             player = self.repo.player(self.user_id, quest.id)
-            if not player or player.status != "active":
+            if (
+                not player
+                or player.status != "active"
+                or quest.availability_config.get("engine") == 2
+            ):
                 continue
             objectives = self.repo.objectives(quest.id)
             progress = self.repo.progress(player.id)

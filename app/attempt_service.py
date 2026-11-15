@@ -69,6 +69,37 @@ def final_report(
     events: list[tuple[InterestEvent, CareerDirection]],
 ) -> FinalReport:
     """Build an explainable result from persisted interest evidence only."""
+    experiences = [
+        (event, direction)
+        for event, direction in events
+        if event.source == "quest-experience"
+    ]
+    if experiences:
+        scores: dict[int, int] = {}
+        names = {}
+        for event, direction in experiences:
+            scores[event.direction_id] = (
+                scores.get(event.direction_id, 0) + event.weight
+            )
+            names[event.direction_id] = direction.title
+        interested = sorted(scores, key=lambda key: (-scores[key], key))
+        return FinalReport(
+            event_count=len(experiences),
+            completed_task_count=len(experiences),
+            directions=[
+                ReportDirection(
+                    key,
+                    names[key],
+                    scores[key],
+                    "Интерес отражает ваше впечатление и дополнительное исследование; "
+                    "ошибки и помощь не снижают его.",
+                )
+                for key in interested
+                if scores[key] > 0
+            ],
+            observations=[event.explanation for event, _ in experiences],
+            next_steps=["Сравните оба задания каждого направления и свои впечатления."],
+        )
     completed = [event for event, _ in events if event.source == "task_completed"]
     scores: dict[int, int] = {}
     titles: dict[int, str] = {}
