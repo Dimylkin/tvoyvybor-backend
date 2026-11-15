@@ -43,6 +43,8 @@ class UserResponse(BaseModel):
     email: str
     role: UserRole
     onboarding_completed: bool
+    intro_completed: bool
+    main_story_completed: bool
 
 
 class TokenResponse(BaseModel):
