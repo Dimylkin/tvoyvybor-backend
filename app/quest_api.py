@@ -17,6 +17,8 @@ UserDep = Annotated[User, Depends(current_user)]
 
 
 class ObjectiveOutput(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     title: str
     description: str
@@ -28,6 +30,8 @@ class ObjectiveOutput(BaseModel):
 
 
 class QuestOutput(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     slug: str
     title: str
@@ -40,10 +44,19 @@ class QuestOutput(BaseModel):
     completed_at: datetime | None
     tracked: bool
     objectives: list[ObjectiveOutput]
-    gameplay: dict | None = None
+    gameplay: "GameplayOutput | None" = None
+
+
+class GameplayOutput(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    kind: str
+    state: dict[str, Any]
 
 
 class ObjectiveChange(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     quest_id: int
     objective_id: int
     objective_completed: bool
@@ -51,11 +64,15 @@ class ObjectiveChange(BaseModel):
 
 
 class InteractionOutput(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     accepted: bool
     changes: list[ObjectiveChange]
 
 
 class TerminalOutput(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     log: str
     port: int
 
@@ -142,7 +159,22 @@ class GameActionInput(BaseModel):
     payload: GamePayload = Field(default_factory=GamePayload)
 
 
-@router.post("/quests/{quest_id}/actions")
+class AwardOutput(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    slug: str
+    title: str
+    description: str
+
+
+class GameActionOutput(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    state: dict[str, Any]
+    awards: list[AwardOutput]
+
+
+@router.post("/quests/{quest_id}/actions", response_model=GameActionOutput)
 def game_action(
     quest_id: int, data: GameActionInput, session: SessionDep, user: UserDep
 ):

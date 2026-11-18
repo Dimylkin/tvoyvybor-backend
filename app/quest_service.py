@@ -1,9 +1,17 @@
 from uuid import uuid4
 
-from fastapi import HTTPException
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from app.quest_dtos import (
+    GameplayView,
+    InteractionResult,
+    ObjectiveChangeResult,
+    ObjectiveView,
+    QuestView,
+    TerminalResult,
+)
+from app.quest_errors import QuestError
 from app.quest_models import (
     PlayerQuest,
     PlayerQuestObjective,
@@ -23,7 +31,7 @@ class QuestService:
     def definition(self, quest_id):
         quest = self.repo.definition(quest_id)
         if quest is None:
-            raise HTTPException(404, "Quest not found")
+            raise QuestError(404, "Quest not found")
         return quest
 
     def available(self, quest):
@@ -40,58 +48,59 @@ class QuestService:
         )
         return set(prerequisites) <= completed
 
-    def view(self, quest):
+    def view(self, quest: QuestDefinition) -> QuestView:
         player = self.repo.player(self.user_id, quest.id)
         progress = self.repo.progress(player.id) if player else {}
         tracked = self.session.get(TrackedQuest, self.user_id)
         from app.quest_gameplay import state_for
 
-        return {
-            "gameplay": (
-                {
-                    "kind": quest.availability_config["kind"],
-                    "state": state_for(self, quest),
-                }
-                if quest.availability_config.get("engine") == 2
-                else None
+        gameplay = (
+            GameplayView(
+                kind=quest.availability_config["kind"],
+                state=state_for(self, quest),
+            )
+            if quest.availability_config.get("engine") == 2
+            else None
+        )
+        return QuestView(
+            gameplay=gameplay,
+            id=quest.id,
+            slug=quest.slug,
+            title=quest.title,
+            description=quest.description,
+            category=quest.category,
+            location_slug=quest.location_slug,
+            giver_npc_id=quest.giver_npc_id,
+            status=(
+                player.status
+                if player and player.status != "offered"
+                else ("available" if self.available(quest) else "locked")
             ),
-            "id": quest.id,
-            "slug": quest.slug,
-            "title": quest.title,
-            "description": quest.description,
-            "category": quest.category,
-            "location_slug": quest.location_slug,
-            "giver_npc_id": quest.giver_npc_id,
-            "status": player.status
-            if player and player.status != "offered"
-            else ("available" if self.available(quest) else "locked"),
-            "accepted_at": player.accepted_at if player else None,
-            "completed_at": player.completed_at if player else None,
-            "tracked": bool(
-                player and tracked and tracked.player_quest_id == player.id
-            ),
-            "objectives": [
-                {
-                    "id": o.id,
-                    "title": o.title,
-                    "description": o.description,
-                    "objective_type": o.objective_type,
-                    "required_count": o.required_count,
-                    "current_count": progress[o.id].current_count
-                    if o.id in progress
-                    else 0,
-                    "completed": bool(o.id in progress and progress[o.id].completed_at),
-                    "is_required": o.is_required,
-                }
+            accepted_at=player.accepted_at if player else None,
+            completed_at=player.completed_at if player else None,
+            tracked=bool(player and tracked and tracked.player_quest_id == player.id),
+            objectives=[
+                ObjectiveView(
+                    id=o.id,
+                    title=o.title,
+                    description=o.description,
+                    objective_type=o.objective_type,
+                    required_count=o.required_count,
+                    current_count=(
+                        progress[o.id].current_count if o.id in progress else 0
+                    ),
+                    completed=bool(o.id in progress and progress[o.id].completed_at),
+                    is_required=o.is_required,
+                )
                 for o in self.repo.objectives(quest.id)
             ],
-        }
+        )
 
     def offer(self, quest_id, npc_id):
         self.repo.lock_user(self.user_id)
         quest = self.definition(quest_id)
         if quest.giver_npc_id != npc_id or not self.available(quest):
-            raise HTTPException(404, "Quest not available from this NPC")
+            raise QuestError(404, "Quest not available from this NPC")
         player = self.repo.player(self.user_id, quest_id)
         if not player:
             player = PlayerQuest(
@@ -109,11 +118,11 @@ class QuestService:
         quest = self.definition(quest_id)
         player = self.repo.player(self.user_id, quest_id)
         if not player or not self.available(quest):
-            raise HTTPException(409, "Quest must be offered first")
+            raise QuestError(409, "Quest must be offered first")
         if player.status == "active":
             return self.view(quest)
         if player.status not in ("offered", "abandoned"):
-            raise HTTPException(409, "Quest cannot be accepted")
+            raise QuestError(409, "Quest cannot be accepted")
         if quest.category == "professional":
             other = self.session.scalar(
                 select(QuestDefinition.title)
@@ -127,7 +136,7 @@ class QuestService:
                 )
             )
             if other:
-                raise HTTPException(
+                raise QuestError(
                     409, f"Сначала завершите дело этого наставника: {other}"
                 )
         if (
@@ -150,7 +159,7 @@ class QuestService:
             or player.status not in ("active", "abandoned")
             or quest.category == "main"
         ):
-            raise HTTPException(409, "Quest cannot be abandoned")
+            raise QuestError(409, "Quest cannot be abandoned")
         if player.status == "active":
             player.status, player.abandoned_at = "abandoned", now()
             if quest.availability_config.get("engine") == 2:
@@ -187,7 +196,7 @@ class QuestService:
             quest = self.definition(quest_id)
             player = self.repo.player(self.user_id, quest.id)
             if not player or player.status != "active":
-                raise HTTPException(409, "Only active quests can be tracked")
+                raise QuestError(409, "Only active quests can be tracked")
             if tracked:
                 tracked.player_quest_id = player.id
             else:
@@ -196,7 +205,7 @@ class QuestService:
                 )
         self.session.commit()
 
-    def terminal(self, request_id):
+    def terminal(self, request_id: str) -> TerminalResult:
         self.repo.lock_user(self.user_id)
         previous = self.repo.event(self.user_id, request_id)
         if previous:
@@ -204,8 +213,8 @@ class QuestService:
                 previous.event_type != "terminal_opened"
                 or previous.target_key != "backend_terminal"
             ):
-                raise HTTPException(409, "Request ID has different content")
-            return previous.result
+                raise QuestError(409, "Request ID has different content")
+            return TerminalResult(**previous.result)
         for quest in self.repo.definitions():
             if quest.slug != "server-on-vacation":
                 continue
@@ -226,12 +235,12 @@ class QuestService:
                 "terminal_investigated",
                 "terminal_problem_fixed",
             ):
-                result = {
-                    "log": (
+                result = TerminalResult(
+                    log=(
                         "Проверка: прокси ожидает порт 8080; сервер слушает порт 8000."
                     ),
-                    "port": 8000,
-                }
+                    port=8000,
+                )
                 self.session.add(
                     QuestEvent(
                         user_id=self.user_id,
@@ -239,14 +248,16 @@ class QuestService:
                         event_type="terminal_opened",
                         target_key="backend_terminal",
                         payload={},
-                        result=result,
+                        result={"log": result.log, "port": result.port},
                     )
                 )
                 self.session.commit()
                 return result
-        raise HTTPException(409, "Terminal is not available yet")
+        raise QuestError(409, "Terminal is not available yet")
 
-    def interact(self, request_id, event_type, target_key, payload):
+    def interact(
+        self, request_id: str, event_type: str, target_key: str, payload: dict
+    ) -> InteractionResult:
         self.repo.lock_user(self.user_id)
         previous = self.repo.event(self.user_id, request_id)
         if previous:
@@ -255,9 +266,14 @@ class QuestService:
                 target_key,
                 payload,
             ):
-                raise HTTPException(409, "Request ID has different content")
-            return previous.result
-        changed = []
+                raise QuestError(409, "Request ID has different content")
+            return InteractionResult(
+                accepted=previous.result["accepted"],
+                changes=[
+                    ObjectiveChangeResult(**item) for item in previous.result["changes"]
+                ],
+            )
+        changed: list[ObjectiveChangeResult] = []
         for quest in self.repo.definitions():
             player = self.repo.player(self.user_id, quest.id)
             if (
@@ -296,12 +312,12 @@ class QuestService:
                     )
                 )
                 if not issued:
-                    raise HTTPException(409, "Open the terminal first")
+                    raise QuestError(409, "Open the terminal first")
             expected = current.validation_config.get("payload", {})
             if not isinstance(expected, dict) or any(
                 payload.get(k) != v for k, v in expected.items()
             ):
-                raise HTTPException(422, "Configuration check failed")
+                raise QuestError(422, "Configuration check failed")
             item = progress.get(current.id)
             if not item:
                 item = PlayerQuestObjective(
@@ -321,16 +337,16 @@ class QuestService:
                 if tracked and tracked.player_quest_id == player.id:
                     self.session.delete(tracked)
             changed.append(
-                {
-                    "quest_id": quest.id,
-                    "objective_id": current.id,
-                    "objective_completed": bool(item.completed_at),
-                    "quest_completed": player.status == "completed",
-                }
+                ObjectiveChangeResult(
+                    quest_id=quest.id,
+                    objective_id=current.id,
+                    objective_completed=bool(item.completed_at),
+                    quest_completed=player.status == "completed",
+                )
             )
         if not changed:
-            raise HTTPException(409, "Interaction is not valid for a current objective")
-        result = {"accepted": True, "changes": changed}
+            raise QuestError(409, "Interaction is not valid for a current objective")
+        result = InteractionResult(accepted=True, changes=changed)
         self.session.add(
             QuestEvent(
                 user_id=self.user_id,
@@ -338,7 +354,18 @@ class QuestService:
                 event_type=event_type,
                 target_key=target_key,
                 payload=payload,
-                result=result,
+                result={
+                    "accepted": result.accepted,
+                    "changes": [
+                        {
+                            "quest_id": item.quest_id,
+                            "objective_id": item.objective_id,
+                            "objective_completed": item.objective_completed,
+                            "quest_completed": item.quest_completed,
+                        }
+                        for item in result.changes
+                    ],
+                },
             )
         )
         self.session.commit()
