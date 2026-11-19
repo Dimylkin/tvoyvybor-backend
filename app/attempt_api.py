@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
+from app.activity_profile import activity_profile
 from app.attempt_repository import AttemptRepository
 from app.attempt_service import (
     AttemptConflictError,
@@ -152,3 +153,9 @@ def get_final_report(session: SessionDep, user: UserDep) -> FinalReportOutput:
         observations=report.observations,
         next_steps=report.next_steps,
     )
+
+
+@router.get("/activity-profile")
+def get_activity_profile(session: SessionDep, user: UserDep) -> dict:
+    """Return explainable activity interests from both new and legacy gameplay."""
+    return activity_profile(session, user.id)

@@ -12,6 +12,7 @@ from sqlalchemy.pool import StaticPool
 from app.database import Base, get_session
 from app.main import app
 from app.models import Achievement, InterestEvent, TaskAttempt, User, UserRole
+from app.quest_models import PlayerQuest, QuestDefinition, QuestEvent
 from app.security import create_access_token
 
 
@@ -63,6 +64,76 @@ def attempt_client() -> Generator[tuple[TestClient, sessionmaker[Session]], None
 
 def auth(user_id: int) -> dict[str, str]:
     return {"Authorization": f"Bearer {create_access_token(user_id)}"}
+
+
+@pytest.mark.parametrize(
+    ("kinds", "expected"),
+    [
+        (("code", "diagnosis"), {"Backend", "QA"}),
+        (("data",), {"Data Analytics", "Data Science", "BI"}),
+        (("responsive", "ux"), {"UI/UX Design", "Frontend", "UX Research"}),
+        (
+            ("interview",),
+            {"Business Analysis", "System Analysis", "Product Management"},
+        ),
+    ],
+)
+def test_activity_profile_recommends_careers_from_interests_not_success(
+    attempt_client, kinds, expected
+) -> None:
+    client, sessions = attempt_client
+    with sessions() as session:
+        for index, kind in enumerate(kinds):
+            quest = QuestDefinition(
+                slug=f"profile-{kind}",
+                title=f"Задача {kind}",
+                description="profile evidence",
+                category="professional",
+                direction_id=None,
+                giver_npc_id="mentor",
+                location_slug="campus",
+                availability_config={"engine": 2, "kind": kind},
+                is_published=True,
+            )
+            session.add(quest)
+            session.flush()
+            player = PlayerQuest(user_id=2, quest_id=quest.id, status="completed")
+            session.add(player)
+            session.add(
+                QuestEvent(
+                    user_id=2,
+                    request_id=str(uuid4()),
+                    event_type="minigame_action",
+                    target_key=f"quest:{quest.id}",
+                    payload={},
+                    result={
+                        "state": {
+                            "stage": "complete",
+                            "reaction": "interesting",
+                            "attempts": 5,
+                            "active_seconds": 240,
+                            "extra_exploration": 2,
+                            "success": index == 0 and kind != "data",
+                            "seen": ["result"],
+                        }
+                    },
+                )
+            )
+        session.commit()
+
+    response = client.get("/activity-profile", headers=auth(2))
+    assert response.status_code == 200
+    profile = response.json()
+    assert expected <= {career["name"] for career in profile["careers"]}
+    assert profile["groups"]
+    assert profile["preliminary"] is True
+    # Interest is based on reported curiosity and exploration, not correctness.
+    if "data" in kinds:
+        assert profile["performance_score"] == 0
+        assert any(
+            group["code"] == "data" and group["score"] > 0
+            for group in profile["groups"]
+        )
 
 
 def create_scenario(client: TestClient) -> tuple[int, int, int]:
