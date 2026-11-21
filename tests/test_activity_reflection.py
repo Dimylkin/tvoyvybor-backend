@@ -1,6 +1,7 @@
 from uuid import uuid4
 
-from test_minigames import action, start
+import pytest
+from test_minigames import action, solve, start
 from test_quest_api import client as client
 from test_quest_api import headers
 
@@ -116,3 +117,122 @@ def test_other_players_actions_do_not_authorize_reflection(games):
         },
     )
     assert response.status_code == 409
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected"),
+    [
+        ("diagnosis", {"investigation", "coding", "verification"}),
+        ("code", {"coding", "verification"}),
+        ("responsive", {"interface", "verification"}),
+        ("ux", {"interface", "users"}),
+        ("interview", {"users", "requirements"}),
+        ("data", {"investigation", "data", "verification"}),
+    ],
+)
+def test_each_game_offers_observed_activities_for_reflection(games, kind, expected):
+    qid = start(games, kind)
+    initial = next(row for row in profile(games)["history"] if row["quest_id"] == qid)
+    assert initial["activities"] == []
+    assert profile(games)["insights"] == []
+
+    solve(games, qid, kind)
+    history = next(row for row in profile(games)["history"] if row["quest_id"] == qid)
+    assert {row["code"] for row in history["activities"]} == expected
+    assert profile(games)["insights"] == []
+    for code in expected:
+        response = reflect(games, qid, "repeat", code)
+        assert response.status_code == 200
+        assert response.json()["activity_code"] == code
+        assert profile(games)["insights"][0]["status"] == "hypothesis"
+    assert games.get(f"/quests/{qid}", headers=headers()).json()["status"] == "active"
+
+
+@pytest.mark.parametrize(
+    ("kind", "steps", "code"),
+    [
+        (
+            "diagnosis",
+            [("inspect", "logs", None), ("log", "syntax", None)],
+            "investigation",
+        ),
+        (
+            "code",
+            [("run", "def calculate_average(grades):\n    return 0", None)],
+            "coding",
+        ),
+        ("responsive", [("property", "100%", "width")], "interface"),
+        ("ux", [("simulate", None, None)], "users"),
+        ("interview", [("question", "who", None)], "users"),
+        ("data", [("slice", "regions", None)], "data"),
+    ],
+)
+def test_each_game_allows_reflection_before_success(games, kind, steps, code):
+    qid = start(games, kind)
+    for name, value, key in steps:
+        result = action(games, qid, name, value, key)
+        assert result.status_code == 200
+        assert not result.json()["state"]["success"]
+    history = next(row for row in profile(games)["history"] if row["quest_id"] == qid)
+    assert code in {row["code"] for row in history["activities"]}
+    assert reflect(games, qid, "repeat", code).status_code == 200
+    assert profile(games)["insights"][0]["status"] == "hypothesis"
+    assert games.get(f"/quests/{qid}", headers=headers()).json()["status"] == "active"
+
+
+def test_completed_legacy_reaction_can_be_clarified_from_history(games):
+    qid = start(games, "diagnosis")
+    solve(games, qid, "diagnosis")
+    for line in ("1", "2"):
+        assert action(games, qid, "dialogue-line", line, "debrief").status_code == 200
+    assert action(games, qid, "report").status_code == 200
+    assert action(games, qid, "react", "interesting").status_code == 200
+
+    before = profile(games)
+    history = next(row for row in before["history"] if row["quest_id"] == qid)
+    assert history["status"] == "completed"
+    assert history["legacy_reaction"] == "interesting"
+    assert history["reflection"] is None
+    assert "investigation" in {row["code"] for row in history["activities"]}
+    assert before["insights"] == []
+
+    assert reflect(games, qid, "repeat", "investigation").status_code == 200
+    restored = profile(games)
+    history = next(row for row in restored["history"] if row["quest_id"] == qid)
+    assert history["legacy_reaction"] == "interesting"
+    assert history["reflection"]["activity_code"] == "investigation"
+    assert restored["insights"][0]["status"] == "hypothesis"
+    assert (
+        games.get(f"/quests/{qid}", headers=headers()).json()["status"] == "completed"
+    )
+
+
+def test_reset_preserves_reflection_but_requires_new_actions_for_new_answer(games):
+    qid = start(games, "code")
+    assert (
+        action(
+            games, qid, "run", "def calculate_average(grades):\n    return 0"
+        ).status_code
+        == 200
+    )
+    saved = reflect(games, qid, "repeat", "coding").json()
+    assert games.post(f"/quests/{qid}/abandon", headers=headers()).status_code == 200
+    history = next(row for row in profile(games)["history"] if row["quest_id"] == qid)
+    assert history["reflection"] == saved
+    assert history["activities"] == []
+    assert profile(games)["insights"][0]["status"] == "hypothesis"
+
+    assert games.post(f"/quests/{qid}/accept", headers=headers()).status_code == 200
+    assert reflect(games, qid, "repeat", "coding").status_code == 409
+    for line in range(1, 7):
+        assert action(games, qid, "intro-line", str(line)).status_code == 200
+    assert action(games, qid, "intro-complete").status_code == 200
+    assert action(games, qid, "open").status_code == 200
+    assert (
+        action(
+            games, qid, "run", "def calculate_average(grades):\n    return 0"
+        ).status_code
+        == 200
+    )
+    assert reflect(games, qid, "not_mine", "coding").status_code == 200
+    assert profile(games)["insights"] == []
