@@ -54,3 +54,115 @@ def test_user_lock_serializes_independent_postgres_sessions() -> None:
             cleanup.query(User).filter(User.email == email).delete()
             cleanup.commit()
         engine.dispose()
+
+
+@pytest.mark.skipif(not POSTGRES_URL, reason="TEST_POSTGRES_URL is not configured")
+def test_concurrent_reflections_serialize_and_retry_keeps_latest() -> None:
+    from sqlalchemy import select
+
+    from app.activity_profile import activity_profile, save_reflection
+    from app.quest_models import PlayerQuest, QuestDefinition, QuestEvent
+    from app.quest_service import QuestService
+
+    assert POSTGRES_URL is not None
+    engine = create_engine(POSTGRES_URL, pool_pre_ping=True)
+    email = f"reflection-{uuid4()}@example.test"
+    slug = f"reflection-{uuid4()}"
+    started = Event()
+    finished = Event()
+    first_id, second_id = str(uuid4()), str(uuid4())
+    user_id = quest_id = None
+    try:
+        with Session(engine) as setup:
+            user = User(email=email, password_hash="test-hash")
+            quest = QuestDefinition(
+                slug=slug,
+                title="Проба",
+                description="Проба",
+                category="professional",
+                giver_npc_id="mentor",
+                location_slug="backend",
+                availability_config={"engine": 2, "kind": "code"},
+                is_published=True,
+            )
+            setup.add_all([user, quest])
+            setup.flush()
+            user_id, quest_id = user.id, quest.id
+            setup.add(PlayerQuest(user_id=user_id, quest_id=quest_id, status="active"))
+            setup.add(
+                QuestEvent(
+                    user_id=user_id,
+                    request_id=str(uuid4()),
+                    event_type="minigame_action",
+                    target_key=f"quest:{quest_id}",
+                    payload={"action": "run", "payload": {"value": "return 0"}},
+                    result={"state": {}},
+                )
+            )
+            setup.commit()
+
+        def second_write():
+            with Session(engine) as session:
+                started.set()
+                result = save_reflection(
+                    QuestService(session, user_id),
+                    quest_id,
+                    second_id,
+                    "unsure",
+                    None,
+                    None,
+                )
+                finished.set()
+                return result
+
+        with Session(engine) as first, ThreadPoolExecutor(max_workers=1) as executor:
+            QuestRepository(first).lock_user(user_id)
+            future = executor.submit(second_write)
+            try:
+                assert started.wait(2)
+                assert not finished.wait(0.2)
+                initial = save_reflection(
+                    QuestService(first, user_id),
+                    quest_id,
+                    first_id,
+                    "repeat",
+                    "coding",
+                    None,
+                )
+            finally:
+                first.rollback()
+            assert future.result(timeout=5)["response"] == "unsure"
+        with Session(engine) as verify:
+            retried = save_reflection(
+                QuestService(verify, user_id),
+                quest_id,
+                first_id,
+                "repeat",
+                "coding",
+                None,
+            )
+            assert retried == initial
+            result = activity_profile(verify, user_id)
+            assert (
+                next(
+                    item for item in result["history"] if item["quest_id"] == quest_id
+                )["reflection"]["response"]
+                == "unsure"
+            )
+            events = verify.scalars(
+                select(QuestEvent).where(
+                    QuestEvent.user_id == user_id,
+                    QuestEvent.event_type == "activity_reflection",
+                )
+            ).all()
+            assert len(events) == 2
+    finally:
+        with Session(engine) as cleanup:
+            if user_id is not None:
+                cleanup.query(QuestEvent).filter_by(user_id=user_id).delete()
+                cleanup.query(PlayerQuest).filter_by(user_id=user_id).delete()
+                cleanup.query(User).filter_by(id=user_id).delete()
+            if quest_id is not None:
+                cleanup.query(QuestDefinition).filter_by(id=quest_id).delete()
+            cleanup.commit()
+        engine.dispose()

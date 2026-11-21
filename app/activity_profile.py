@@ -1,391 +1,423 @@
-"""Explainable activity-interest profile built from gameplay evidence."""
+"""Explicit activity reflections and deterministic, explainable suggestions."""
 
 from collections import defaultdict
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
 
-from app.models import InterestEvent, Scenario, Task
+from app.quest_catalog import QUESTS
+from app.quest_errors import QuestError
 from app.quest_models import PlayerQuest, QuestDefinition, QuestEvent
+from app.quest_service import QuestService
 
-GROUPS = {
-    "coding": (
-        "Работа с кодом",
-        "Тебе было интересно писать код и разбираться в логике решения.",
-    ),
-    "investigation": (
-        "Поиск причин",
-        "Тебя увлекало выяснять, почему система ведёт себя именно так.",
-    ),
-    "data": (
-        "Работа с данными",
-        "Ты задерживался на сравнении показателей и проверке данных.",
-    ),
-    "visual": (
-        "Визуальная часть",
-        "Тебе было интересно менять отображение и замечать детали интерфейса.",
-    ),
-    "users": (
-        "Взаимодействие с пользователем",
-        "Ты обращал внимание на то, как человеку пользоваться системой.",
-    ),
-    "requirements": (
-        "Исследование требований",
-        "Тебе было интересно задавать вопросы и выяснять настоящую потребность.",
-    ),
-    "systems": (
-        "Системное мышление",
-        "Ты разбирался, как части системы связаны друг с другом.",
-    ),
-    "practical": (
-        "Практическая техническая работа",
-        "Тебе было интересно настраивать инструменты и проверять результат "
-        "на практике.",
-    ),
-    "experimentation": (
-        "Экспериментирование",
-        "Ты пробовал варианты и смотрел, как меняется результат.",
-    ),
-    "uncertainty": (
-        "Работа с неопределённостью",
-        "Тебе было интересно разбираться без заранее известного ответа.",
-    ),
-    "patterns": (
-        "Поиск закономерностей",
-        "Ты проверял гипотезы и искал повторяющиеся связи.",
-    ),
+LABELS = {
+    "investigation": "Искать причины",
+    "coding": "Работать над кодом",
+    "verification": "Проверять результат",
+    "interface": "Менять интерфейс",
+    "users": "Разбираться в действиях пользователя",
+    "requirements": "Формулировать требования",
+    "data": "Исследовать данные",
 }
-
-IMPACTS = {
-    "diagnosis": ("investigation", "systems", "practical", "uncertainty"),
-    "code": ("coding", "systems", "experimentation", "practical"),
-    "responsive": ("visual", "users", "experimentation", "systems"),
-    "ux": ("users", "visual", "requirements", "patterns"),
-    "interview": ("requirements", "uncertainty", "systems", "users"),
-    "data": ("data", "patterns", "investigation", "uncertainty"),
+KINDS = {
+    "diagnosis": ("investigation", "coding", "verification"),
+    "code": ("coding", "verification"),
+    "responsive": ("interface", "verification"),
+    "ux": ("interface", "users"),
+    "interview": ("users", "requirements"),
+    "data": ("investigation", "data", "verification"),
 }
-
 CAREERS = {
-    "coding": [
-        (
-            "Software Development",
-            "Здесь много программирования, логики и автоматизации.",
-        ),
-        ("Backend", "В backend часто проектируют логику сервисов и работу с данными."),
-        ("Automation", "Автоматизация превращает повторяющиеся действия в программы."),
-    ],
     "investigation": [
-        ("QA", "В QA ищут причины сбоев и проверяют поведение продукта."),
-        ("DevOps", "В DevOps диагностируют сервисы и автоматизируют их работу."),
-        (
-            "Cybersecurity",
-            "В безопасности исследуют уязвимости и причины подозрительных событий.",
-        ),
+        ("QA", "В QA ищут причины сбоев."),
+        ("Аналитика данных", "Аналитики объясняют аномалии в данных."),
     ],
-    "data": [
-        (
-            "Data Analytics",
-            "Здесь исследуют показатели и помогают принимать решения на основе данных.",
-        ),
-        ("Data Science", "Можно проверять гипотезы и искать сигналы в наборах данных."),
-        ("BI", "BI связывает данные с понятными отчётами и метриками."),
-        (
-            "Data Engineering",
-            "Data Engineering готовит надёжные потоки данных для анализа.",
-        ),
-        (
-            "Machine Learning",
-            "В машинном обучении модели находят закономерности в данных.",
-        ),
-    ],
-    "visual": [
-        ("UI/UX Design", "Дизайнеры продумывают вид и понятность интерфейсов."),
-        ("Frontend", "Frontend превращает интерфейсный замысел в работающий экран."),
-        ("Data Visualization", "Визуализация помогает ясно показывать сложные данные."),
-    ],
-    "users": [
-        ("UX Research", "Исследователи изучают реальные сценарии и затруднения людей."),
-        ("Product Design", "Здесь улучшают целостный пользовательский опыт."),
-        ("Frontend", "Во frontend много решений о взаимодействии с интерфейсом."),
-    ],
-    "requirements": [
-        (
-            "Business Analysis",
-            "Бизнес-аналитики уточняют потребности и формулируют требования.",
-        ),
-        (
-            "System Analysis",
-            "Системные аналитики переводят потребности в поведение и контракты систем.",
-        ),
-        (
-            "Product Management",
-            "В продуктовой работе связывают проблемы пользователей и цели команды.",
-        ),
-    ],
-    "systems": [
-        (
-            "Software Development",
-            "Разработка объединяет код, логику и взаимодействие частей приложения.",
-        ),
-        (
-            "QA",
-            "Проверка системы помогает находить ошибки во взаимодействии её частей.",
-        ),
-        (
-            "System Analysis",
-            "Системный анализ рассматривает компоненты и связи целиком.",
-        ),
-        ("Backend", "Backend соединяет бизнес-логику, API и данные."),
-        (
-            "Data Engineering",
-            "Data Engineering строит потоки между источниками и хранилищами.",
-        ),
-    ],
-    "practical": [
-        ("DevOps", "DevOps включает настройку окружений, инструментов и сервисов."),
-        (
-            "System Administration",
-            "Системные администраторы настраивают и поддерживают инфраструктуру.",
-        ),
-        (
-            "Embedded Systems",
-            "В embedded сочетаются код и настройка физических устройств.",
-        ),
-    ],
-    "experimentation": [
-        ("QA", "Тестирование позволяет менять условия и наблюдать результат."),
-        ("R&D", "В исследованиях и разработке проверяют разные подходы."),
-        ("Machine Learning", "В ML экспериментируют с данными и качеством моделей."),
-    ],
-    "uncertainty": [
-        (
-            "Product Management",
-            "В продукте часто приходится проверять, какую проблему стоит решать.",
-        ),
-        ("Cybersecurity", "Расследование угроз требует работы с неполными данными."),
-        (
-            "Data Science",
-            "В Data Science гипотезы проверяют при неопределённых результатах.",
-        ),
-    ],
-    "patterns": [
-        ("Data Science", "Здесь ищут закономерности и проверяют гипотезы на данных."),
-        ("Machine Learning", "ML учится находить повторяющиеся связи в примерах."),
-        ("Data Analytics", "Аналитики сравнивают показатели и объясняют их изменения."),
-    ],
+    "coding": [("Backend", "В backend пишут логику сервисов.")],
+    "verification": [("QA", "В QA проверяют поведение продукта.")],
+    "interface": [("Frontend", "Во frontend создают и меняют интерфейсы.")],
+    "users": [("UX Research", "Исследователи изучают действия пользователей.")],
+    "requirements": [("Бизнес-анализ", "Аналитики уточняют потребности и требования.")],
+    "data": [("Аналитика данных", "Аналитики исследуют срезы данных.")],
 }
-
-LEARNING = {
-    "coding": [
-        ("Python или JavaScript", "Выбери один язык и сделай небольшой проект."),
-        ("Задачи на логику", "Попробуй реализовать несколько простых алгоритмов."),
-    ],
-    "investigation": [
-        ("Debugging", "Разбери небольшую ошибку по логам и проверь гипотезу."),
-        ("Тестирование", "Попробуй найти граничные случаи и проверить их."),
-    ],
-    "data": [
-        ("SQL", "Потренируйся задавать вопросы небольшой таблице."),
-        (
-            "Небольшой датасет",
-            "Сравни показатели и проверь, чем объясняется заметное изменение.",
-        ),
-    ],
-    "visual": [
-        ("Figma или HTML/CSS", "Собери экран и проверь его на телефоне и компьютере.")
-    ],
-    "users": [
-        (
-            "Проверка интерфейса",
-            "Попроси человека выполнить задачу и запиши, где он остановился.",
-        )
-    ],
-    "requirements": [
-        ("Описание проблемы", "Опиши пользователя, его затруднение и нужный результат.")
-    ],
-    "systems": [
-        (
-            "Схема сервиса",
-            "Нарисуй компоненты небольшого приложения и потоки данных между ними.",
-        )
-    ],
-    "practical": [
-        (
-            "Docker и Linux",
-            "Запусти небольшой сервис локально и изучи его конфигурацию.",
-        )
-    ],
-    "experimentation": [
-        ("Мини-эксперимент", "Измени один параметр и сравни результат до и после.")
-    ],
-    "uncertainty": [
-        (
-            "Проверка гипотез",
-            "Выбери вопрос, запиши возможные объяснения и найди данные для проверки.",
-        )
-    ],
-    "patterns": [
-        (
-            "Таблица наблюдений",
-            "Собери несколько примеров и поищи повторяющийся признак.",
-        )
-    ],
+ORDER = {item[0]: index for index, item in enumerate(QUESTS)}
+EXERCISES = {
+    "investigation": "Запиши две причины неожиданного события и проверь одну из них.",
+    "coding": "Напиши функцию для повторяющегося действия и попробуй её на примерах.",
+    "verification": "Проверь обычный и граничный случаи простой функции или формы.",
+    "interface": "Измени элемент страницы и посмотри на него на узком экране.",
+    "users": "Попроси человека выполнить задачу и отметь, где он остановился.",
+    "requirements": "Опиши пользователя, его проблему и результат, который ему нужен.",
+    "data": "Сравни две группы в небольшой таблице и запиши замеченное различие.",
 }
-
-LEGACY_TASK_GROUPS = {
-    "api-contract": ("coding", "systems"),
-    "validation-boundary": ("coding", "investigation"),
-    "database-change": ("systems", "practical"),
-    "incident-response": ("investigation", "uncertainty"),
-    "loading-state": ("visual", "users"),
-    "form-feedback": ("users", "visual"),
-    "component-state": ("systems", "experimentation"),
-    "accessible-action": ("users", "visual"),
-    "metric-question": ("data", "requirements"),
-    "data-quality": ("data", "investigation"),
-    "category-comparison": ("data", "visual", "patterns"),
-    "experiment-result": ("data", "experimentation", "uncertainty"),
+EXPLORE_CODES = {
+    "diagnosis": "verification",
+    "code": "verification",
+    "responsive": "verification",
+    "ux": "users",
+    "interview": "users",
+    "data": "data",
+}
+CONTEXTS = {
+    "diagnosis": "выяснить причину сбоя сервиса",
+    "code": "написать и проверить функцию",
+    "responsive": "адаптировать макет для разных устройств",
+    "ux": "улучшить форму регистрации",
+    "interview": "выяснить потребность заказчика",
+    "data": "объяснить аномалию в данных о продажах",
 }
 
 
-def activity_profile(session: Session, user_id: int) -> dict:
-    scores: dict[str, int] = defaultdict(int)
-    evidence: dict[str, list[str]] = defaultdict(list)
-    performance = 0
-    sessions = 0
-    definitions = session.scalars(
-        select(QuestDefinition).where(QuestDefinition.is_published.is_(True))
-    ).all()
-    for quest in definitions:
-        player = session.scalar(
-            select(PlayerQuest).where(
-                PlayerQuest.user_id == user_id, PlayerQuest.quest_id == quest.id
-            )
+def observed(kind, event):
+    """Classify only server-accepted actions, never drafts or success alone."""
+    if event.event_type != "minigame_action":
+        return ()
+    action = event.payload.get("action")
+    payload = event.payload.get("payload", {})
+    value = payload.get("value")
+    if kind == "diagnosis":
+        return {
+            "log": ("investigation",),
+            "hypothesis": ("investigation",),
+            "repair": ("coding",),
+            "verify": ("verification",),
+        }.get(action, ())
+    if kind == "code":
+        return (
+            ("coding", "verification")
+            if action == "run" and isinstance(value, str) and value.strip()
+            else ()
         )
-        if not player:
-            continue
-        state_event = session.scalar(
-            select(QuestEvent)
-            .where(
-                QuestEvent.user_id == user_id,
-                QuestEvent.target_key == f"quest:{quest.id}",
-                QuestEvent.event_type.in_(("minigame_action", "minigame_reset")),
-            )
-            .order_by(QuestEvent.id.desc())
+    if kind == "responsive":
+        return {
+            "property": ("interface",),
+            "device": ("verification",),
+            "verify": ("verification",),
+        }.get(action, ())
+    if kind == "ux":
+        return {"property": ("interface",), "simulate": ("users",)}.get(action, ())
+    if kind == "interview":
+        if action == "question" and value in ("who", "after", "pain"):
+            return ("users",)
+        return (
+            ("requirements",) if action in ("compose", "proposal", "criteria") else ()
         )
-        state = state_event.result.get("state", {}) if state_event else {}
-        kind = quest.availability_config.get("kind")
-        impacts = IMPACTS.get(kind, ())
-        if not impacts or not (
-            player.status == "completed"
-            or state.get("action_count", 0)
-            or state.get("attempts", 0)
-            or state.get("seen")
+    if kind == "data":
+        return {
+            "operation": ("investigation",),
+            "conclusion": ("investigation",),
+            "slice": ("data",),
+            "compare": ("verification",),
+        }.get(action, ())
+    return ()
+
+
+def current_actions(events, kind):
+    found = {}
+    for event in events:
+        if event.event_type == "minigame_reset":
+            found.clear()
+        for code in observed(kind, event):
+            found[code] = event.id
+    return found
+
+
+def save_reflection(service, quest_id, request_id, response, activity_code, barrier):
+    service.repo.lock_user(service.user_id)
+    quest = service.definition(quest_id)
+    target = f"quest:{quest_id}"
+    payload = {"response": response, "activity_code": activity_code, "barrier": barrier}
+    previous = service.repo.event(service.user_id, request_id)
+    if previous:
+        if (previous.event_type, previous.target_key, previous.payload) != (
+            "activity_reflection",
+            target,
+            payload,
         ):
-            continue
-        sessions += 1
-        reaction = state.get("reaction")
-        # Self-reported interest and voluntary exploration outweigh task success.
-        base = {"more": 4, "interesting": 3, "enough": 1, "not-mine": 0}.get(
-            reaction, 1
-        )
-        engagement = min(2, int(bool(state.get("extra_exploration")))) + int(
-            state.get("active_seconds", 0) >= 120
-        )
-        value = base + engagement
-        for group in impacts:
-            scores[group] += value
-            reason = f"{quest.title}: {GROUPS[group][1]}"
-            if reaction in ("more", "interesting"):
-                reason += (
-                    " Ты отметил, что было интересно."
-                    if reaction == "interesting"
-                    else " Ты захотел продолжить."
-                )
-            if engagement:
-                reason += " Ты продолжал исследовать задачу."
-            evidence[group].append(reason)
-        performance += int(bool(state.get("success")))
-
-    # Reconstruct a modest preliminary profile from old completed tasks; historical
-    # records contain correctness but no self-reported interest or engagement.
-    legacy = session.scalars(
-        select(InterestEvent).where(
-            InterestEvent.user_id == user_id,
-            InterestEvent.source == "task_completed",
-        )
+            raise QuestError(409, "Request ID has different content")
+        return previous.result
+    player = service.repo.player(service.user_id, quest_id)
+    kind = quest.availability_config.get("kind")
+    if (
+        quest.availability_config.get("engine") != 2
+        or not player
+        or player.status not in ("active", "completed")
+    ):
+        raise QuestError(409, "Reflection is not available")
+    events = service.session.scalars(
+        select(QuestEvent)
+        .where(QuestEvent.user_id == service.user_id, QuestEvent.target_key == target)
+        .order_by(QuestEvent.id)
     ).all()
-    seen_legacy: set[int] = set()
-    for event in legacy:
-        if not event.task_id or event.task_id in seen_legacy:
-            continue
-        seen_legacy.add(event.task_id)
-        slug = session.scalar(
-            select(Scenario.slug)
-            .join(Task, Task.scenario_id == Scenario.id)
-            .where(Task.id == event.task_id)
+    actions = current_actions(events, kind)
+    if (
+        not actions
+        or (response == "repeat" and not activity_code)
+        or (activity_code and activity_code not in actions)
+    ):
+        raise QuestError(409, "Activity is not available")
+    result = {
+        **payload,
+        "evidence_event_id": actions.get(activity_code)
+        if activity_code
+        else next(iter(actions.values())),
+    }
+    service.session.add(
+        QuestEvent(
+            user_id=service.user_id,
+            request_id=request_id,
+            event_type="activity_reflection",
+            target_key=target,
+            payload=payload,
+            result=result,
         )
-        for group in LEGACY_TASK_GROUPS.get(slug, ()):
-            scores[group] += 1
-            evidence[group].append(
-                "Восстановлено по завершённому заданию; прежние данные "
-                "не содержат самооценки интереса."
-            )
-        performance += 1
-    ranked = sorted(
-        (key for key, score in scores.items() if score > 0),
-        key=lambda key: (-scores[key], key),
     )
-    top = ranked[:5]
-    career_scores: dict[str, int] = defaultdict(int)
-    career_reasons: dict[str, list[str]] = defaultdict(list)
-    career_order: list[str] = []
-    for group in top:
-        for name, reason in CAREERS[group]:
-            if name not in career_order:
-                career_order.append(name)
-            career_scores[name] += scores[group]
-            career_reasons[name].append(reason)
-    careers = sorted(
-        career_scores, key=lambda name: (-career_scores[name], career_order.index(name))
-    )[:6]
-    learning = []
-    for group in top:
-        for title, action in LEARNING[group]:
-            if title not in {item["title"] for item in learning}:
-                learning.append(
-                    {"title": title, "action": action, "group": GROUPS[group][0]}
-                )
-            if len(learning) == 4:
-                break
-        if len(learning) == 4:
-            break
-    return {
-        "event_count": sessions + len(seen_legacy),
-        "performance_score": performance,
-        "preliminary": sessions < 3,
-        "groups": [
-            {
-                "code": key,
-                "name": GROUPS[key][0],
-                "description": GROUPS[key][1],
-                "score": scores[key],
-                "evidence_count": len(evidence[key]),
-                "evidence": evidence[key][:3],
-            }
-            for key in top
-        ],
-        "careers": [
-            {"name": name, "explanation": " ".join(dict.fromkeys(career_reasons[name]))}
-            for name in careers
-        ],
-        "learning": learning,
-        "additional": (
-            "Data Engineering",
-            "Похоже, тебе интересны и данные, и устройство систем. "
-            "Data Engineering соединяет эти виды работы.",
+    service.session.commit()
+    return result
+
+
+def activity_profile(session, user_id):
+    service = QuestService(session, user_id)
+    all_definitions = list(
+        session.scalars(
+            select(QuestDefinition).where(
+                QuestDefinition.availability_config.is_not(None)
+            )
+        ).all()
+    )
+    definitions = [
+        q
+        for q in all_definitions
+        if q.availability_config.get("engine") == 2
+        and q.availability_config.get("kind") in KINDS
+    ]
+    definitions.sort(key=lambda q: (ORDER.get(q.slug, len(ORDER)), q.id))
+    players = {
+        p.quest_id: p
+        for p in session.scalars(
+            select(PlayerQuest).where(PlayerQuest.user_id == user_id)
+        ).all()
+    }
+    events_by_target = defaultdict(list)
+    for event in session.scalars(
+        select(QuestEvent).where(QuestEvent.user_id == user_id).order_by(QuestEvent.id)
+    ):
+        events_by_target[event.target_key].append(event)
+    definitions.extend(
+        q
+        for q in all_definitions
+        if q not in definitions
+        and any(
+            e.event_type == "activity_reflection"
+            for e in events_by_target[f"quest:{q.id}"]
         )
-        if "data" in top and "systems" in top
-        else None,
-        "observations": sessions,
+    )
+    history = []
+    positive = defaultdict(list)
+    negative = defaultdict(list)
+    for quest in definitions:
+        player = players.get(quest.id)
+        events = events_by_target[f"quest:{quest.id}"]
+        reflections = [e for e in events if e.event_type == "activity_reflection"]
+        if (not player or player.status == "offered") and not reflections:
+            continue
+        kind = quest.availability_config.get("kind")
+        actions = current_actions(events, kind)
+        reflection = reflections[-1].result if reflections else None
+        editable = (
+            quest.is_published and player and player.status in ("active", "completed")
+        )
+        history.append(
+            {
+                "quest_id": quest.id,
+                "title": quest.title,
+                "status": player.status if player else "abandoned",
+                "published": quest.is_published,
+                "activities": [
+                    {"code": code, "label": LABELS[code]}
+                    for code in KINDS.get(kind, ())
+                    if code in actions
+                ]
+                if editable
+                else [],
+                "reflection": reflection,
+                "legacy_reaction": next(
+                    (
+                        e.payload.get("payload", {}).get("value")
+                        for e in reversed(events)
+                        if e.event_type == "minigame_action"
+                        and e.payload.get("action") == "react"
+                    ),
+                    None,
+                ),
+            }
+        )
+        if reflection and reflection.get("activity_code") in LABELS:
+            code = reflection["activity_code"]
+            description = (
+                f"В «{quest.title}» ты захотел повторить: {LABELS[code].lower()}."
+                if reflection["response"] == "repeat"
+                else f"В «{quest.title}» это действие оказалось не твоим: "
+                f"{LABELS[code].lower()}."
+            )
+            evidence_id = reflection.get("evidence_event_id", reflections[-1].id)
+            start = max(
+                (
+                    e.id
+                    for e in events
+                    if e.event_type == "minigame_reset" and e.id < evidence_id
+                ),
+                default=0,
+            )
+            end = min(
+                (
+                    e.id
+                    for e in events
+                    if e.event_type == "minigame_reset" and e.id > evidence_id
+                ),
+                default=float("inf"),
+            )
+            if EXPLORE_CODES.get(kind) == code and any(
+                e.event_type == "minigame_action"
+                and e.payload.get("action") == "explore"
+                and start < e.id < end
+                for e in events
+            ):
+                description += " Ты также попробовал дополнительное исследование."
+            item = {
+                "quest_id": quest.id,
+                "title": quest.title,
+                "description": description,
+            }
+            if reflection["response"] == "repeat":
+                positive[code].append(item)
+            elif reflection["response"] == "not_mine":
+                negative[code].append(item)
+    insights = []
+    for code in LABELS:
+        if positive[code]:
+            mixed = bool(negative[code])
+            insights.append(
+                {
+                    "activity_code": code,
+                    "label": LABELS[code],
+                    "status": "mixed"
+                    if mixed
+                    else "repeated"
+                    if len(positive[code]) >= 2
+                    else "hypothesis",
+                    "evidence": positive[code] + negative[code],
+                }
+            )
+    careers = []
+    for insight in insights:
+        if insight["status"] == "repeated":
+            for name, explanation in CAREERS[insight["activity_code"]]:
+                if name not in [c["name"] for c in careers] and len(careers) < 3:
+                    careers.append({"name": name, "explanation": explanation})
+    next_step = None
+    if insights:
+        insight = insights[0]
+        code = insight["activity_code"]
+        source = next(
+            q for q in definitions if q.id == insight["evidence"][0]["quest_id"]
+        )
+        candidates = []
+        for q in definitions:
+            player = players.get(q.id)
+            if (
+                not q.is_published
+                or q.id == source.id
+                or code not in KINDS.get(q.availability_config.get("kind"), ())
+                or (player and player.status == "completed")
+                or not service.available(q)
+            ):
+                continue
+            if not (player and player.status == "active") and any(
+                p.status == "active"
+                and p.quest_id != q.id
+                and other.giver_npc_id == q.giver_npc_id
+                and other.category == "professional"
+                for other in all_definitions
+                if (p := players.get(other.id))
+            ):
+                continue
+            candidates.append(q)
+        candidates.sort(
+            key=lambda q: (
+                q.location_slug == source.location_slug,
+                not (players.get(q.id) and players[q.id].status == "active"),
+                ORDER.get(q.slug, len(ORDER)),
+                q.id,
+            )
+        )
+        if candidates:
+            q = candidates[0]
+            next_step = {
+                "quest_id": q.id,
+                "title": q.title,
+                "explanation": (
+                    f"В «{q.title}» тоже можно попробовать: "
+                    f"{LABELS[code].lower()}: "
+                    f"{CONTEXTS[q.availability_config['kind']]}."
+                ),
+            }
+        else:
+            next_step = {
+                "quest_id": None,
+                "title": "Небольшая самостоятельная проба",
+                "explanation": EXERCISES[code],
+            }
+    else:
+        explored = {
+            q.location_slug
+            for q in definitions
+            if q.id in players and players[q.id].accepted_at
+        }
+        for q in definitions:
+            p = players.get(q.id)
+            if (
+                q.is_published
+                and q.location_slug not in explored
+                and not (p and p.status == "completed")
+                and service.available(q)
+                and not any(
+                    player.status == "active"
+                    and other.giver_npc_id == q.giver_npc_id
+                    and other.category == "professional"
+                    for other in all_definitions
+                    if (player := players.get(other.id))
+                )
+            ):
+                next_step = {
+                    "quest_id": q.id,
+                    "title": q.title,
+                    "explanation": "Попробуй новую ситуацию в незнакомом корпусе.",
+                }
+                break
+    groups = [
+        {
+            "code": i["activity_code"],
+            "name": i["label"],
+            "description": "Разные впечатления в разных ситуациях."
+            if i["status"] == "mixed"
+            else "Повторившийся интерес."
+            if i["status"] == "repeated"
+            else "Пока это предположение после одной пробы.",
+            "score": len(positive[i["activity_code"]]),
+            "evidence_count": len(i["evidence"]),
+            "evidence": [e["description"] for e in i["evidence"]],
+        }
+        for i in insights
+    ]
+    return {
+        "event_count": len(history),
+        "performance_score": sum(p.status == "completed" for p in players.values()),
+        "preliminary": not any(i["status"] == "repeated" for i in insights),
+        "groups": groups,
+        "careers": careers,
+        "learning": [],
+        "additional": None,
+        "observations": len(history),
+        "history": history,
+        "insights": insights,
+        "next_step": next_step,
     }

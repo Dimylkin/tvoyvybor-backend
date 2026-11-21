@@ -187,3 +187,35 @@ def game_action(
         data.action,
         data.payload.model_dump(exclude_none=True),
     )
+
+
+class ReflectionInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: UUID
+    response: Literal["repeat", "unsure", "not_mine"]
+    activity_code: str | None = Field(default=None, max_length=40)
+    barrier: Literal["difficulty", "interface", "activity"] | None = None
+
+
+class ReflectionOutput(BaseModel):
+    response: Literal["repeat", "unsure", "not_mine"]
+    activity_code: str | None
+    barrier: Literal["difficulty", "interface", "activity"] | None
+    evidence_event_id: int
+
+
+@router.post("/quests/{quest_id}/reflection", response_model=ReflectionOutput)
+def reflection(
+    quest_id: int, data: ReflectionInput, session: SessionDep, user: UserDep
+):
+    from app.activity_profile import save_reflection
+
+    return save_reflection(
+        QuestService(session, user.id),
+        quest_id,
+        str(data.request_id),
+        data.response,
+        data.activity_code,
+        data.barrier,
+    )
