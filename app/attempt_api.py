@@ -1,4 +1,4 @@
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -75,6 +75,81 @@ class FinalReportOutput(BaseModel):
     directions: list[FinalReportDirectionOutput]
     observations: list[str]
     next_steps: list[str]
+
+
+class ActivityOptionOutput(BaseModel):
+    code: str
+    label: str
+
+
+class ReflectionOutput(BaseModel):
+    response: Literal["repeat", "unsure", "not_mine"]
+    activity_code: str | None
+    barrier: Literal["difficulty", "interface", "activity"] | None
+    evidence_event_id: int
+
+
+class ActivityHistoryOutput(BaseModel):
+    quest_id: int
+    title: str
+    status: str
+    published: bool
+    activities: list[ActivityOptionOutput]
+    reflection: ReflectionOutput | None
+    legacy_reaction: str | None
+
+
+class ActivityEvidenceOutput(BaseModel):
+    quest_id: int
+    title: str
+    description: str
+
+
+class ActivityInsightOutput(BaseModel):
+    activity_code: str
+    label: str
+    status: Literal["hypothesis", "repeated", "mixed"]
+    evidence: list[ActivityEvidenceOutput]
+
+
+class ActivityStepOutput(BaseModel):
+    quest_id: int | None
+    title: str
+    explanation: str
+
+
+class ActivityGroupOutput(BaseModel):
+    code: str
+    name: str
+    description: str
+    score: int
+    evidence_count: int
+    evidence: list[str]
+
+
+class ActivityCareerOutput(BaseModel):
+    name: str
+    explanation: str
+
+
+class ActivityLearningOutput(BaseModel):
+    title: str
+    action: str
+    group: str
+
+
+class ActivityProfileOutput(BaseModel):
+    event_count: int
+    performance_score: int
+    preliminary: bool
+    groups: list[ActivityGroupOutput]
+    careers: list[ActivityCareerOutput]
+    learning: list[ActivityLearningOutput]
+    additional: tuple[str, str] | None
+    observations: int
+    history: list[ActivityHistoryOutput]
+    insights: list[ActivityInsightOutput]
+    next_step: ActivityStepOutput | None
 
 
 @router.post("/tasks/{task_id}/attempts", response_model=AttemptOutput, status_code=201)
@@ -155,7 +230,7 @@ def get_final_report(session: SessionDep, user: UserDep) -> FinalReportOutput:
     )
 
 
-@router.get("/activity-profile")
+@router.get("/activity-profile", response_model=ActivityProfileOutput)
 def get_activity_profile(session: SessionDep, user: UserDep) -> dict:
     """Return explainable activity interests from both new and legacy gameplay."""
     return activity_profile(session, user.id)
