@@ -40,14 +40,59 @@ CAREERS = {
 }
 ORDER = {item[0]: index for index, item in enumerate(QUESTS)}
 EXERCISES = {
-    "investigation": "Запиши две причины неожиданного события и проверь одну из них.",
-    "coding": "Напиши функцию для повторяющегося действия и попробуй её на примерах.",
+    "investigation": (
+        "Выясни, почему выросла выручка при прежнем числе заказов: "
+        "запиши две версии и проверь одну."
+    ),
+    "coding": "Напиши функцию расчёта скидки и проверь её на нескольких заказах.",
     "verification": "Проверь обычный и граничный случаи простой функции или формы.",
     "interface": "Измени элемент страницы и посмотри на него на узком экране.",
     "users": "Попроси человека выполнить задачу и отметь, где он остановился.",
     "requirements": "Опиши пользователя, его проблему и результат, который ему нужен.",
     "data": "Сравни две группы в небольшой таблице и запиши замеченное различие.",
 }
+INTERESTS = {
+    "investigation": "тебе интересно искать причины и проверять версии",
+    "coding": "тебе интересно писать и изучать код",
+    "verification": "тебе интересно проверять результат и находить ошибки",
+    "interface": "тебе интересно менять и улучшать интерфейсы",
+    "users": "тебе интересно разбираться в действиях и трудностях пользователей",
+    "requirements": "тебе интересно выяснять потребности и формулировать требования",
+    "data": "тебе интересно изучать данные и сравнивать показатели",
+}
+
+
+def evidence_description(quest, code, response, event):
+    """Describe the accepted action without exposing input or inventing success."""
+    kind = quest.availability_config.get("kind")
+    action = event.payload.get("action") if event else None
+    descriptions = {
+        ("diagnosis", "log"): "просмотрел запись журнала",
+        ("diagnosis", "hypothesis"): "проверил версию о причине сбоя",
+        ("diagnosis", "repair"): "отправил попытку исправления сбоя",
+        ("diagnosis", "verify"): "проверил работу API",
+        ("code", "run"): "запустил тесты функции с написанным кодом",
+        ("responsive", "property"): "изменил свойство макета",
+        ("responsive", "device"): "проверил макет на устройстве",
+        ("responsive", "verify"): "отправил макет на проверку",
+        ("ux", "property"): "изменил форму регистрации",
+        ("ux", "simulate"): "провёл сценарий регистрации пользователя",
+        ("interview", "question"): "задал вопрос о пользователе или его работе",
+        ("interview", "compose"): "отправил предложение заказчику",
+        ("interview", "proposal"): "отправил предложение заказчику",
+        ("interview", "criteria"): "отправил критерии приёмки",
+        ("data", "slice"): "открыл срез данных",
+        ("data", "operation"): "просмотрел операцию",
+        ("data", "conclusion"): "проверил версию о причине изменения показателей",
+        ("data", "compare"): "сравнил исходный и очищенный ряды данных",
+    }
+    action_text = descriptions.get((kind, action))
+    choice = "захотел повторить" if response == "repeat" else "отметил, что не твоё"
+    if action_text:
+        return f"В «{quest.title}» ты {action_text} и {choice}: {LABELS[code].lower()}."
+    return f"В «{quest.title}» ты {choice}: {LABELS[code].lower()}."
+
+
 EXPLORE_CODES = {
     "diagnosis": "verification",
     "code": "verification",
@@ -252,13 +297,18 @@ def activity_profile(session, user_id):
         )
         if reflection and reflection.get("activity_code") in LABELS:
             code = reflection["activity_code"]
-            description = (
-                f"В «{quest.title}» ты захотел повторить: {LABELS[code].lower()}."
-                if reflection["response"] == "repeat"
-                else f"В «{quest.title}» это действие оказалось не твоим: "
-                f"{LABELS[code].lower()}."
+            evidence_id = reflection.get("evidence_event_id") or reflections[-1].id
+            evidence_event = next(
+                (
+                    e
+                    for e in events
+                    if e.id == evidence_id and code in observed(kind, e)
+                ),
+                None,
             )
-            evidence_id = reflection.get("evidence_event_id", reflections[-1].id)
+            description = evidence_description(
+                quest, code, reflection["response"], evidence_event
+            )
             start = max(
                 (
                     e.id
@@ -304,11 +354,46 @@ def activity_profile(session, user_id):
                     else "repeated"
                     if len(positive[code]) >= 2
                     else "hypothesis",
-                    "evidence": positive[code] + negative[code],
+                    "evidence": (
+                        positive[code][:1]
+                        + negative[code][:1]
+                        + positive[code][1:]
+                        + negative[code][1:]
+                        if mixed
+                        else positive[code]
+                    ),
                 }
             )
+    priorities = {"repeated": 0, "hypothesis": 1, "mixed": 2}
+    insights.sort(
+        key=lambda insight: (
+            priorities[insight["status"]],
+            -len(positive[insight["activity_code"]]),
+            list(LABELS).index(insight["activity_code"]),
+        )
+    )
+    main_observation = None
+    if insights:
+        main = insights[0]
+        code = main["activity_code"]
+        interest = INTERESTS[code]
+        headline = (
+            f"Похоже, {interest}."
+            if main["status"] == "hypothesis"
+            else f"В разных ситуациях у тебя разные впечатления: {interest}."
+            if main["status"] == "mixed"
+            else f"Похоже, {interest} — этот интерес повторился."
+        )
+        main_observation = {
+            "activity_code": code,
+            "status": main["status"],
+            "headline": headline,
+            "interest": interest[0].upper() + interest[1:] + ".",
+            "direction": CAREERS[code][0][0],
+            "example": EXERCISES[code],
+        }
     careers = []
-    for insight in insights:
+    for insight in insights[:1]:
         if insight["status"] == "repeated":
             for name, explanation in CAREERS[insight["activity_code"]]:
                 if name not in [c["name"] for c in careers] and len(careers) < 3:
@@ -420,4 +505,5 @@ def activity_profile(session, user_id):
         "history": history,
         "insights": insights,
         "next_step": next_step,
+        "main_observation": main_observation,
     }

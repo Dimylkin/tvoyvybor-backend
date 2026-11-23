@@ -86,7 +86,7 @@ class ReflectionOutput(BaseModel):
     response: Literal["repeat", "unsure", "not_mine"]
     activity_code: str | None
     barrier: Literal["difficulty", "interface", "activity"] | None
-    evidence_event_id: int
+    evidence_event_id: int | None = None
 
 
 class ActivityHistoryOutput(BaseModel):
@@ -116,6 +116,15 @@ class ActivityStepOutput(BaseModel):
     quest_id: int | None
     title: str
     explanation: str
+
+
+class MainObservationOutput(BaseModel):
+    activity_code: str
+    status: Literal["hypothesis", "repeated", "mixed"]
+    headline: str
+    interest: str
+    direction: str
+    example: str
 
 
 class ActivityGroupOutput(BaseModel):
@@ -150,6 +159,7 @@ class ActivityProfileOutput(BaseModel):
     history: list[ActivityHistoryOutput]
     insights: list[ActivityInsightOutput]
     next_step: ActivityStepOutput | None
+    main_observation: MainObservationOutput | None
 
 
 @router.post("/tasks/{task_id}/attempts", response_model=AttemptOutput, status_code=201)
