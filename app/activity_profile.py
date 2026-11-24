@@ -507,3 +507,60 @@ def activity_profile(session, user_id):
         "next_step": next_step,
         "main_observation": main_observation,
     }
+
+
+def save_reflection_v2(service, quest_id, request_id, changes, repeat):
+    """Apply only explicitly submitted values backed by current-run actions."""
+    service.repo.lock_user(service.user_id)
+    quest = service.definition(quest_id)
+    target = f"quest:{quest_id}"
+    payload = {"changes": changes, "repeat": repeat}
+    previous = service.repo.event(service.user_id, request_id)
+    if previous:
+        if (previous.event_type, previous.target_key, previous.payload) != (
+            "activity_reflection_v2",
+            target,
+            payload,
+        ):
+            raise QuestError(409, "Request ID has different content")
+        return previous.result
+    player = service.repo.player(service.user_id, quest_id)
+    kind = quest.availability_config.get("kind")
+    if (
+        quest.availability_config.get("engine") != 2
+        or not player
+        or player.status not in ("active", "completed")
+    ):
+        raise QuestError(409, "Reflection is not available")
+    events = list(
+        service.session.scalars(
+            select(QuestEvent)
+            .where(
+                QuestEvent.user_id == service.user_id, QuestEvent.target_key == target
+            )
+            .order_by(QuestEvent.id)
+        )
+    )
+    actions = current_actions(events, kind)
+    if not actions or any(change["code"] not in actions for change in changes):
+        raise QuestError(409, "Activity is not available")
+    result = {
+        "version": 2,
+        "changes": [
+            {**change, "evidence_event_id": actions[change["code"]]}
+            for change in changes
+        ],
+        "repeat": repeat,
+    }
+    service.session.add(
+        QuestEvent(
+            user_id=service.user_id,
+            request_id=request_id,
+            event_type="activity_reflection_v2",
+            target_key=target,
+            payload=payload,
+            result=result,
+        )
+    )
+    service.session.commit()
+    return result

@@ -82,8 +82,12 @@ class QuestService:
             objectives=[
                 ObjectiveView(
                     id=o.id,
-                    title=o.title,
-                    description=o.description,
+                    title="Завершите дело"
+                    if gameplay and o.objective_type == "result"
+                    else o.title,
+                    description="Впечатления можно отметить после завершения или позже."
+                    if gameplay and o.objective_type == "result"
+                    else o.description,
                     objective_type=o.objective_type,
                     required_count=o.required_count,
                     current_count=(

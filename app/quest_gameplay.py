@@ -244,6 +244,9 @@ def transition(kind, state, action, payload):
         require(s["stage"] == "result" and value in REACTIONS)
         s["reaction"] = value
         s["stage"] = "complete"
+    elif action == "finish":
+        require(s["stage"] in ("result", "complete") and not payload)
+        s["stage"] = "complete"
     else:
         require(s["stage"] in ("mini-game", "return"))
         if action == "explore":
@@ -676,7 +679,14 @@ def act(service, quest_id, request_id, action, payload):
             awards=[AwardResult(**item) for item in previous.result["awards"]],
         )
     player = service.repo.player(service.user_id, quest.id)
-    require(player and player.status == "active", "Примите задание у NPC")
+    require(
+        player
+        and (
+            player.status == "active"
+            or (action == "finish" and player.status == "completed")
+        ),
+        "Примите задание у NPC",
+    )
     state = state_for(service, quest)
     new, rewards = transition(quest.availability_config["kind"], state, action, payload)
     # Server clocks bound engagement time; a forged client duration is never accepted.
@@ -691,13 +701,14 @@ def act(service, quest_id, request_id, action, payload):
     )
     new["last_action"] = timestamp.isoformat()
     new["action_count"] = state.get("action_count", 0) + 1
-    if action == "react":
+    if action in ("react", "finish") and player.status == "active":
         player.status, player.completed_at = "completed", now()
         rewards.append(quest.slug)
         tracked = service.session.get(TrackedQuest, service.user_id)
         if tracked and tracked.player_quest_id == player.id:
             service.session.delete(tracked)
-        record_interest(service, quest, new)
+        if action == "react":
+            record_interest(service, quest, new)
     stage_order = ["interaction", "mini-game", "return", "result", "complete"]
     stage_index = stage_order.index(new["stage"]) if new["stage"] != "intro" else 0
     progress = service.repo.progress(player.id)

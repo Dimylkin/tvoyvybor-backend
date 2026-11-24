@@ -161,6 +161,28 @@ def solve(client, qid, kind):
 @pytest.mark.parametrize(
     "kind", ["diagnosis", "code", "responsive", "ux", "interview", "data"]
 )
+def test_finish_without_reaction_is_idempotent(games, kind):
+    qid = start(games, kind)
+    assert action(games, qid, "finish").status_code == 409
+    solve(games, qid, kind)
+    for line in ("1", "2"):
+        assert action(games, qid, "dialogue-line", line, "debrief").status_code == 200
+    assert action(games, qid, "report").status_code == 200
+    request_id = str(uuid4())
+    first = action(games, qid, "finish", request_id=request_id)
+    assert first.status_code == 200
+    assert action(games, qid, "finish", request_id=request_id).json() == first.json()
+    again = action(games, qid, "finish")
+    assert again.status_code == 200 and again.json()["awards"] == []
+    quest = games.get(f"/quests/{qid}", headers=headers()).json()
+    assert quest["status"] == "completed"
+    assert all(objective["completed"] for objective in quest["objectives"])
+    assert games.get("/interest-events", headers=headers()).json() == []
+
+
+@pytest.mark.parametrize(
+    "kind", ["diagnosis", "code", "responsive", "ux", "interview", "data"]
+)
 def test_full_experience_persistence_and_consequences(games, kind):
     qid = start(games, kind)
     assert action(games, qid, "react", "more").status_code == 409
@@ -461,3 +483,28 @@ def test_assistant_only_accepts_prepared_questions_and_preserves_subject():
     assert state["example_used"]
     with pytest.raises(QuestError):
         transition("diagnosis", state, "assistant-question", {"key": "none"})
+
+
+def test_story_can_finish_without_questionnaire_or_ratings(games):
+    assert games.put("/game/final-quest/complete", headers=headers()).status_code == 409
+    for kind in ("diagnosis", "code", "responsive", "ux", "interview", "data"):
+        qid = start(games, kind)
+        solve(games, qid, kind)
+        for line in ("1", "2"):
+            assert (
+                action(games, qid, "dialogue-line", line, "debrief").status_code == 200
+            )
+        assert action(games, qid, "report").status_code == 200
+        assert action(games, qid, "finish").status_code == 200
+    final = games.put("/game/final-quest/complete", headers=headers())
+    assert final.status_code == 200 and final.json()["main_story_completed"] is True
+    assert (
+        games.put("/game/final-quest/complete", headers=headers()).json()
+        == final.json()
+    )
+    achievements = games.get("/achievements", headers=headers()).json()
+    assert sum(a["slug"] == "tried-everything" for a in achievements) == 1
+    assert (
+        games.get("/questionnaire/state", headers=headers()).json()["status"]
+        == "not_started"
+    )

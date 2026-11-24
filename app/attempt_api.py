@@ -1,4 +1,4 @@
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -148,6 +148,7 @@ class ActivityLearningOutput(BaseModel):
 
 
 class ActivityProfileOutput(BaseModel):
+    career_profile: dict[str, Any]
     event_count: int
     performance_score: int
     preliminary: bool
@@ -243,4 +244,8 @@ def get_final_report(session: SessionDep, user: UserDep) -> FinalReportOutput:
 @router.get("/activity-profile", response_model=ActivityProfileOutput)
 def get_activity_profile(session: SessionDep, user: UserDep) -> dict:
     """Return explainable activity interests from both new and legacy gameplay."""
-    return activity_profile(session, user.id)
+    from app.career_profile_service import career_profile
+
+    result = activity_profile(session, user.id)
+    result["career_profile"] = career_profile(session, user.id, result)
+    return result

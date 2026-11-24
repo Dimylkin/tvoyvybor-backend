@@ -387,3 +387,150 @@ def test_mixed_conclusion_shows_opposing_evidence_among_first_two(games):
     assert any("захотел повторить" in row["description"] for row in first_two)
     assert any("не твоё" in row["description"] for row in first_two)
     assert {row["quest_id"] for row in first_two} >= {responsive}
+
+
+def test_reflection_v2_validates_evidence_and_replaces_rating(games):
+    qid = start(games, "diagnosis")
+    url = f"/quests/{qid}/reflection-v2"
+    payload = {
+        "request_id": str(uuid4()),
+        "changes": [{"code": "investigation", "rating": 4}],
+    }
+    assert games.put(url, headers=headers(), json=payload).status_code == 409
+    assert action(games, qid, "inspect", "logs").status_code == 200
+    assert action(games, qid, "log", "syntax").status_code == 200
+    response = games.put(url, headers=headers(), json=payload)
+    assert response.status_code == 200, response.text
+    assert games.put(url, headers=headers(), json=payload).json() == response.json()
+    assert (
+        games.put(url, headers=headers(), json={**payload, "changes": []}).status_code
+        == 409
+    )
+    profile = games.get("/activity-profile", headers=headers()).json()["career_profile"]
+    assert profile["traits"]["investigation"]["game"] == 4
+    changed = {
+        "request_id": str(uuid4()),
+        "changes": [{"code": "investigation", "rating": 1, "reason": "difficulty"}],
+    }
+    assert games.put(url, headers=headers(), json=changed).status_code == 200
+    profile = games.get("/activity-profile", headers=headers()).json()["career_profile"]
+    assert profile["traits"]["investigation"]["game"] == 1
+    cleared = {
+        "request_id": str(uuid4()),
+        "changes": [{"code": "investigation", "rating": None}],
+    }
+    assert games.put(url, headers=headers(), json=cleared).status_code == 200
+    profile = games.get("/activity-profile", headers=headers()).json()["career_profile"]
+    assert "investigation" not in profile["traits"]
+
+
+def test_career_profile_combines_only_completed_questionnaire_with_explicit_rating(
+    games,
+):
+    qid = start(games, "diagnosis")
+    assert action(games, qid, "inspect", "logs").status_code == 200
+    assert action(games, qid, "log", "syntax").status_code == 200
+    rating = {
+        "request_id": str(uuid4()),
+        "changes": [{"code": "investigation", "rating": 1}],
+    }
+    assert (
+        games.put(
+            f"/quests/{qid}/reflection-v2", headers=headers(), json=rating
+        ).status_code
+        == 200
+    )
+    initial = profile(games)["career_profile"]
+    assert initial["traits"]["investigation"]["value"] == 1
+    attempt = games.post(
+        "/questionnaire/attempts", headers=headers(), json={"request_id": str(uuid4())}
+    ).json()
+    for index in range(1, 25):
+        question_id = f"Q{index:02}"
+        answer = (
+            {"status": "answered", "value": 5} if index == 9 else {"status": "skipped"}
+        )
+        response = games.put(
+            f"/questionnaire/attempts/{attempt['id']}/progress",
+            headers=headers(),
+            json={
+                "request_id": str(uuid4()),
+                "expected_revision": index - 1,
+                "current_question_id": question_id,
+                "answer": {"question_id": question_id, "answer": answer},
+            },
+        )
+        assert response.status_code == 200
+    assert profile(games)["career_profile"]["traits"]["investigation"]["value"] == 1
+    assert (
+        games.post(
+            f"/questionnaire/attempts/{attempt['id']}/complete",
+            headers=headers(),
+            json={"request_id": str(uuid4()), "expected_revision": 24},
+        ).status_code
+        == 200
+    )
+    trait = profile(games)["career_profile"]["traits"]["investigation"]
+    assert trait["value"] == pytest.approx(2.2)
+    assert trait["divergent"] is True
+
+
+@pytest.mark.parametrize(
+    "kind", ["diagnosis", "code", "responsive", "ux", "interview", "data"]
+)
+def test_each_game_exposes_confirmed_actions_for_ratings(games, kind):
+    qid = start(games, kind)
+    solve(games, qid, kind)
+    item = next(row for row in profile(games)["history"] if row["quest_id"] == qid)
+    assert len(item["activities"]) >= 2
+    changes = [
+        {"code": activity["code"], "rating": 4} for activity in item["activities"]
+    ]
+    result = games.put(
+        f"/quests/{qid}/reflection-v2",
+        headers=headers(),
+        json={"request_id": str(uuid4()), "changes": changes},
+    )
+    assert result.status_code == 200
+    assert len(result.json()["changes"]) == len(changes)
+
+
+def test_next_step_respects_ranked_direction_and_mentor_availability(games):
+    attempt = games.post(
+        "/questionnaire/attempts", headers=headers(), json={"request_id": str(uuid4())}
+    ).json()
+    for index in range(1, 25):
+        question = f"Q{index:02}"
+        answer = (
+            {"status": "answered", "value": 5}
+            if index in (1, 2)
+            else {"status": "skipped"}
+        )
+        response = games.put(
+            f"/questionnaire/attempts/{attempt['id']}/progress",
+            headers=headers(),
+            json={
+                "request_id": str(uuid4()),
+                "expected_revision": index - 1,
+                "current_question_id": question,
+                "answer": {"question_id": question, "answer": answer},
+            },
+        )
+        assert response.status_code == 200
+    assert (
+        games.post(
+            f"/questionnaire/attempts/{attempt['id']}/complete",
+            headers=headers(),
+            json={"request_id": str(uuid4()), "expected_revision": 24},
+        ).status_code
+        == 200
+    )
+    result = profile(games)["career_profile"]
+    assert result["leaders"] == ["backend"]
+    quest = games.get(
+        f"/quests/{result['next_step']['quest_id']}", headers=headers()
+    ).json()
+    assert quest["location_slug"] == "backend"
+    active = start(games, "code")
+    result = profile(games)["career_profile"]
+    assert result["next_step"]["quest_id"] == active

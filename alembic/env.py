@@ -6,6 +6,7 @@ from alembic import context
 from app import (
     models,  # noqa: F401 - register mapped tables
     quest_models,  # noqa: F401 - register quest tables
+    questionnaire_models,  # noqa: F401 - register questionnaire tables
 )
 from app.database import Base
 from app.settings import load_settings

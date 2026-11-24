@@ -11,6 +11,7 @@ from app.content_api import router as content_router
 from app.database import engine
 from app.quest_api import router as quest_router
 from app.quest_errors import QuestError
+from app.questionnaire_api import router as questionnaire_router
 from app.settings import load_settings
 from app.story_api import router as story_router
 
@@ -21,6 +22,7 @@ app.include_router(auth_router)
 app.include_router(content_router)
 app.include_router(attempt_router)
 app.include_router(quest_router)
+app.include_router(questionnaire_router)
 app.include_router(story_router)
 
 
