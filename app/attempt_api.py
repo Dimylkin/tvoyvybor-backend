@@ -1,4 +1,4 @@
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -86,7 +86,7 @@ class ReflectionOutput(BaseModel):
     response: Literal["repeat", "unsure", "not_mine"]
     activity_code: str | None
     barrier: Literal["difficulty", "interface", "activity"] | None
-    evidence_event_id: int
+    evidence_event_id: int | None = None
 
 
 class ActivityHistoryOutput(BaseModel):
@@ -118,6 +118,15 @@ class ActivityStepOutput(BaseModel):
     explanation: str
 
 
+class MainObservationOutput(BaseModel):
+    activity_code: str
+    status: Literal["hypothesis", "repeated", "mixed"]
+    headline: str
+    interest: str
+    direction: str
+    example: str
+
+
 class ActivityGroupOutput(BaseModel):
     code: str
     name: str
@@ -139,6 +148,7 @@ class ActivityLearningOutput(BaseModel):
 
 
 class ActivityProfileOutput(BaseModel):
+    career_profile: dict[str, Any]
     event_count: int
     performance_score: int
     preliminary: bool
@@ -150,6 +160,7 @@ class ActivityProfileOutput(BaseModel):
     history: list[ActivityHistoryOutput]
     insights: list[ActivityInsightOutput]
     next_step: ActivityStepOutput | None
+    main_observation: MainObservationOutput | None
 
 
 @router.post("/tasks/{task_id}/attempts", response_model=AttemptOutput, status_code=201)
@@ -233,4 +244,8 @@ def get_final_report(session: SessionDep, user: UserDep) -> FinalReportOutput:
 @router.get("/activity-profile", response_model=ActivityProfileOutput)
 def get_activity_profile(session: SessionDep, user: UserDep) -> dict:
     """Return explainable activity interests from both new and legacy gameplay."""
-    return activity_profile(session, user.id)
+    from app.career_profile_service import career_profile
+
+    result = activity_profile(session, user.id)
+    result["career_profile"] = career_profile(session, user.id, result)
+    return result

@@ -5,7 +5,7 @@ from pathlib import Path
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 
-EXPECTED_HEAD = "0006_story_progress"
+EXPECTED_HEAD = "0007_questionnaire"
 
 
 def main() -> None:

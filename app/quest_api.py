@@ -3,7 +3,7 @@ from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 from sqlalchemy.orm import Session
 
 from app.auth_api import current_user
@@ -218,4 +218,53 @@ def reflection(
         data.response,
         data.activity_code,
         data.barrier,
+    )
+
+
+class ReflectionV2Change(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    code: str = Field(min_length=1, max_length=40)
+    rating: StrictInt | Literal["unable"] | None
+    reason: (
+        Literal["difficulty", "knowledge", "interface", "activity", "other"] | None
+    ) = None
+
+    @model_validator(mode="after")
+    def validate_rating(self):
+        if isinstance(self.rating, int) and not 1 <= self.rating <= 5:
+            raise ValueError("Rating must be between 1 and 5")
+        if self.reason and (not isinstance(self.rating, int) or self.rating > 2):
+            raise ValueError("Reason is only available for ratings 1–2")
+        return self
+
+
+class ReflectionV2Input(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request_id: UUID
+    changes: list[ReflectionV2Change] = Field(max_length=20)
+    repeat: bool | None = None
+    clear_repeat: bool = False
+
+    @model_validator(mode="after")
+    def unique_codes(self):
+        if self.clear_repeat and self.repeat is not None:
+            raise ValueError("Cannot set and clear repeat together")
+        if len({item.code for item in self.changes}) != len(self.changes):
+            raise ValueError("Duplicate activity code")
+        return self
+
+
+@router.put("/quests/{quest_id}/reflection-v2")
+def reflection_v2(
+    quest_id: int, data: ReflectionV2Input, session: SessionDep, user: UserDep
+):
+    from app.activity_profile import save_reflection_v2
+
+    return save_reflection_v2(
+        QuestService(session, user.id),
+        quest_id,
+        str(data.request_id),
+        [item.model_dump() for item in data.changes],
+        data.repeat,
+        data.clear_repeat,
     )
