@@ -2,10 +2,9 @@ from uuid import uuid4
 
 import pytest
 from test_minigames import action, solve, start
+from test_minigames import games as games
 from test_quest_api import client as client
 from test_quest_api import headers
-
-pytest_plugins = ("test_minigames",)
 
 
 def profile(client):

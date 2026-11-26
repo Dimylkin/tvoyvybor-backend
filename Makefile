@@ -38,7 +38,7 @@ unit: ## Запустить unit-тесты без API/БД фикстур
 	$(PYTHON) -m pytest -q tests/test_attempt_service.py tests/test_task_strategy.py
 
 integration: ## Запустить API/SQLite, seed и PostgreSQL integration tests (PG test пропускается без TEST_POSTGRES_URL)
-	$(PYTHON) -m pytest -q tests/test_auth.py tests/test_content.py tests/test_attempt_api.py tests/test_quest_api.py tests/test_quest_acceptance.py tests/test_minigames.py tests/test_activity_reflection.py tests/test_questionnaire.py tests/test_seed_stage6.py tests/test_health.py tests/test_postgres_serialization.py
+	$(PYTHON) -m pytest -q tests/test_auth.py tests/test_content.py tests/test_attempt_api.py tests/test_quest_api.py tests/test_quest_acceptance.py tests/test_minigames.py tests/test_activity_reflection.py tests/test_questionnaire.py tests/test_questionnaire_v2_catalog.py tests/test_questionnaire_v3.py tests/test_career_profile_rules.py tests/test_seed_stage6.py tests/test_health.py tests/test_postgres_serialization.py
 
 integration-postgres: ## Запустить интеграционный тест PostgreSQL (нужен TEST_POSTGRES_URL)
 	$(PYTHON) -m pytest -q tests/test_postgres_serialization.py
