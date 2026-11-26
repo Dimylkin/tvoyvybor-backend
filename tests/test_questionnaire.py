@@ -194,7 +194,7 @@ def test_v2_attempt_validation_replay_and_legacy_client(client):
     assert client.put(url, headers=headers(), json=invalid).status_code == 422
     assert client.put(url, headers=headers(2), json=invalid).status_code == 404
     assert (
-        client.get("/questionnaire/catalog?version=4", headers=headers()).status_code
+        client.get("/questionnaire/catalog?version=5", headers=headers()).status_code
         == 404
     )
 

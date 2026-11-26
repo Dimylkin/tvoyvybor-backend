@@ -21,7 +21,7 @@ def rounded(value):
     return float(Decimal(str(value)).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP))
 
 
-def survey_contexts(result):
+def survey_contexts(result, interpretation_version=2):
     if not result:
         return {}
     contexts = {}
@@ -47,9 +47,14 @@ def survey_contexts(result):
         }
         positive = len(positives) >= 2 or bool(positives and high - positives)
         weak = len(neither) >= 2 or bool(neither and low - neither)
+        contradictory = (
+            interpretation_version >= 3
+            and positive
+            and (bool(low) or len(negatives) >= 2)
+        )
         label = (
             "mixed"
-            if positive and weak
+            if positive and (weak or contradictory)
             else "positive"
             if positive
             else "weak"

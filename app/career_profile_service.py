@@ -11,6 +11,7 @@ from app.quest_models import PlayerQuest, QuestDefinition, QuestEvent
 from app.quest_service import QuestService
 from app.questionnaire_catalog_v2 import QUESTIONS_V2
 from app.questionnaire_catalog_v3 import QUESTIONS_V3
+from app.questionnaire_catalog_v4 import QUESTIONS_V4
 from app.questionnaire_interpretation_v2 import interpret
 from app.questionnaire_service import QuestionnaireService, signals
 
@@ -98,12 +99,16 @@ def career_profile(session, user_id, old_profile):
     survey_result = (
         interpret(
             completed["answers"],
-            QUESTIONS_V3 if completed["catalog_version"] == 3 else QUESTIONS_V2,
+            {2: QUESTIONS_V2, 3: QUESTIONS_V3, 4: QUESTIONS_V4}[
+                completed["catalog_version"]
+            ],
         )
-        if completed and completed["catalog_version"] in (2, 3)
+        if completed and completed["catalog_version"] in (2, 3, 4)
         else None
     )
-    contexts = survey_contexts(survey_result)
+    contexts = survey_contexts(
+        survey_result, completed["interpretation_version"] if completed else 2
+    )
     if completed and completed["catalog_version"] == 1:
         # The old catalogue has absolute ratings but no situational context.
         # Retain it as a limited historical source without treating it as practice.
@@ -402,7 +407,8 @@ def career_profile(session, user_id, old_profile):
             if f"quest:{o['quest_id']}" in ids and o["rating"] >= 4
         ]
         question_contexts = {
-            q["id"]: q.get("context", q["text"]) for q in [*QUESTIONS_V2, *QUESTIONS_V3]
+            q["id"]: q.get("context", q["text"])
+            for q in [*QUESTIONS_V2, *QUESTIONS_V3, *QUESTIONS_V4]
         }
         explanations = [
             question_contexts[source[2:]]

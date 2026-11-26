@@ -9,7 +9,12 @@ from app.auth_api import current_user
 from app.database import get_session
 from app.models import User
 from app.questionnaire_catalog import CATALOG_VERSION
-from app.questionnaire_service import CATALOGS, QuestionnaireService, public_catalog
+from app.questionnaire_service import (
+    CATALOGS,
+    LATEST_CATALOG_VERSION,
+    QuestionnaireService,
+    public_catalog,
+)
 
 router = APIRouter(prefix="/questionnaire", tags=["questionnaire"])
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -50,6 +55,11 @@ def catalog(user: UserDep, version: int = CATALOG_VERSION):
         "version": version,
         "questions": public_catalog(version) if version != 1 else CATALOGS[1],
     }
+
+
+@router.get("/capabilities")
+def capabilities(user: UserDep):
+    return {"latest_catalog_version": LATEST_CATALOG_VERSION}
 
 
 @router.get("/state")

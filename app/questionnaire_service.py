@@ -13,6 +13,7 @@ from app.questionnaire_catalog import (
 )
 from app.questionnaire_catalog_v2 import QUESTIONS_V2
 from app.questionnaire_catalog_v3 import QUESTIONS_V3
+from app.questionnaire_catalog_v4 import QUESTIONS_V4
 from app.questionnaire_interpretation_v2 import interpret
 from app.questionnaire_models import (
     QuestionnaireAnswer,
@@ -21,7 +22,8 @@ from app.questionnaire_models import (
     now,
 )
 
-CATALOGS = {1: QUESTIONS, 2: QUESTIONS_V2, 3: QUESTIONS_V3}
+CATALOGS = {1: QUESTIONS, 2: QUESTIONS_V2, 3: QUESTIONS_V3, 4: QUESTIONS_V4}
+LATEST_CATALOG_VERSION = 4
 
 
 def validate_answer(question_id, answer, version=1):
@@ -34,7 +36,7 @@ def validate_answer(question_id, answer, version=1):
         raise HTTPException(422, "Некорректный ответ")
     status = answer.get("status")
     value = answer.get("value")
-    if version == 3 and status in ("neither", "unsure"):
+    if version >= 3 and status in ("neither", "unsure"):
         raise HTTPException(422, "Выберите ответ или пропустите вопрос")
     if status in ("skipped", "unsure") or (
         status == "neither" and question["format"] == "bipolar"
@@ -213,7 +215,7 @@ class QuestionnaireService:
             user_id=self.user_id,
             number=(attempts[0].number + 1 if attempts else 1),
             catalog_version=version,
-            interpretation_version=1 if version == 1 else 2,
+            interpretation_version=1 if version == 1 else 3 if version >= 4 else 2,
             status="in_progress",
             current_question_id=CATALOGS[version][0]["id"],
             revision=0,
@@ -284,7 +286,9 @@ class QuestionnaireService:
             result["structured_results"] = interpret(
                 answers, CATALOGS[attempt.catalog_version]
             )
-            result["summary"] = survey_contexts(result["structured_results"])
+            result["summary"] = survey_contexts(
+                result["structured_results"], attempt.interpretation_version
+            )
         return result
 
 
