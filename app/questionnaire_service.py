@@ -5,13 +5,15 @@ from collections import defaultdict
 from fastapi import HTTPException
 from sqlalchemy import select
 
+from app.career_profile_rules import survey_contexts
 from app.models import User
 from app.questionnaire_catalog import (
-    CATALOG_VERSION,
-    INTERPRETATION_VERSION,
     QUESTION_BY_ID,
     QUESTIONS,
 )
+from app.questionnaire_catalog_v2 import QUESTIONS_V2
+from app.questionnaire_catalog_v3 import QUESTIONS_V3
+from app.questionnaire_interpretation_v2 import interpret
 from app.questionnaire_models import (
     QuestionnaireAnswer,
     QuestionnaireAttempt,
@@ -19,9 +21,11 @@ from app.questionnaire_models import (
     now,
 )
 
+CATALOGS = {1: QUESTIONS, 2: QUESTIONS_V2, 3: QUESTIONS_V3}
 
-def validate_answer(question_id, answer):
-    question = QUESTION_BY_ID.get(question_id)
+
+def validate_answer(question_id, answer, version=1):
+    question = next((q for q in CATALOGS[version] if q["id"] == question_id), None)
     if (
         not question
         or not isinstance(answer, dict)
@@ -30,13 +34,20 @@ def validate_answer(question_id, answer):
         raise HTTPException(422, "Некорректный ответ")
     status = answer.get("status")
     value = answer.get("value")
-    if status in ("skipped", "unsure"):
+    if version == 3 and status in ("neither", "unsure"):
+        raise HTTPException(422, "Выберите ответ или пропустите вопрос")
+    if status in ("skipped", "unsure") or (
+        status == "neither" and question["format"] == "bipolar"
+    ):
         if value is not None:
             raise HTTPException(422, "Для пропуска значение не требуется")
         return {"status": status, "value": None}
     if status != "answered":
         raise HTTPException(422, "Некорректное состояние ответа")
-    if question["format"] == "scale":
+    if question["format"] == "bipolar":
+        if type(value) is not int or not -2 <= value <= 2:
+            raise HTTPException(422, "Выберите позицию от −2 до 2")
+    elif question["format"] == "scale":
         if type(value) is not int or not 1 <= value <= 5:
             raise HTTPException(422, "Выберите оценку от 1 до 5")
     else:
@@ -126,11 +137,11 @@ class QuestionnaireService:
             "answers": self.answers(attempt),
         }
 
-    def state(self):
+    def state(self, history=False):
         attempts = self.attempts()
         current = next((a for a in attempts if a.status == "in_progress"), None)
         completed = next((a for a in attempts if a.status == "completed"), None)
-        return {
+        result = {
             "status": "in_progress"
             if current
             else "completed"
@@ -139,6 +150,25 @@ class QuestionnaireService:
             "current": self.view(current) if current else None,
             "last_completed": self.view(completed) if completed else None,
         }
+        if history:
+            result["history"] = [
+                {
+                    key: value
+                    for key, value in self.view(a).items()
+                    if key
+                    in (
+                        "id",
+                        "number",
+                        "catalog_version",
+                        "interpretation_version",
+                        "started_at",
+                        "completed_at",
+                    )
+                }
+                for a in attempts
+                if a.status == "completed"
+            ]
+        return result
 
     def execute(self, request_id, operation, request, callback):
         self.session.execute(
@@ -168,20 +198,24 @@ class QuestionnaireService:
         self.session.commit()
         return result, code
 
-    def start(self, retake):
+    def start(self, retake, version=1):
+        if version not in CATALOGS:
+            raise HTTPException(404, "Каталог не найден")
         attempts = self.attempts()
         current = next((a for a in attempts if a.status == "in_progress"), None)
         if current:
+            if current.catalog_version > version:
+                raise HTTPException(409, "Обновите приложение, чтобы продолжить опрос")
             return self.view(current), 200
         if attempts and not retake:
             raise HTTPException(409, "Для повторного прохождения подтвердите начало")
         attempt = QuestionnaireAttempt(
             user_id=self.user_id,
             number=(attempts[0].number + 1 if attempts else 1),
-            catalog_version=CATALOG_VERSION,
-            interpretation_version=INTERPRETATION_VERSION,
+            catalog_version=version,
+            interpretation_version=1 if version == 1 else 2,
             status="in_progress",
-            current_question_id=QUESTIONS[0]["id"],
+            current_question_id=CATALOGS[version][0]["id"],
             revision=0,
         )
         self.session.add(attempt)
@@ -191,11 +225,14 @@ class QuestionnaireService:
     def progress(self, attempt_id, revision, current_question_id, update):
         attempt = self.get(attempt_id)
         self.check_revision(attempt, revision)
-        if current_question_id not in QUESTION_BY_ID:
+        questions = CATALOGS[attempt.catalog_version]
+        if current_question_id not in {q["id"] for q in questions}:
             raise HTTPException(422, "Неизвестный вопрос")
         if update is not None:
             question_id = update["question_id"]
-            answer = validate_answer(question_id, update["answer"])
+            answer = validate_answer(
+                question_id, update["answer"], attempt.catalog_version
+            )
             row = self.session.scalar(
                 select(QuestionnaireAnswer).where(
                     QuestionnaireAnswer.attempt_id == attempt.id,
@@ -217,7 +254,9 @@ class QuestionnaireService:
     def complete(self, attempt_id, revision):
         attempt = self.get(attempt_id)
         self.check_revision(attempt, revision)
-        if len(self.answers(attempt)) != len(QUESTIONS):
+        if set(self.answers(attempt)) != {
+            q["id"] for q in CATALOGS[attempt.catalog_version]
+        }:
             raise HTTPException(409, "Ответьте или пропустите каждый вопрос")
         attempt.status = "completed"
         attempt.completed_at = now()
@@ -234,4 +273,27 @@ class QuestionnaireService:
         attempt = self.get(attempt_id)
         if attempt.status != "completed":
             raise HTTPException(409, "Опрос ещё не завершён")
-        return {**self.view(attempt), "interests": signals(self.answers(attempt))}
+        answers = self.answers(attempt)
+        result = {
+            **self.view(attempt),
+            "catalog": public_catalog(attempt.catalog_version),
+        }
+        if attempt.catalog_version == 1:
+            result["interests"] = signals(answers)
+        else:
+            result["structured_results"] = interpret(
+                answers, CATALOGS[attempt.catalog_version]
+            )
+            result["summary"] = survey_contexts(result["structured_results"])
+        return result
+
+
+def public_catalog(version):
+    def public(value):
+        if isinstance(value, dict):
+            return {k: public(v) for k, v in value.items() if k != "signals"}
+        if isinstance(value, list):
+            return [public(v) for v in value]
+        return value
+
+    return public(CATALOGS[version])

@@ -471,7 +471,9 @@ def test_career_profile_combines_only_completed_questionnaire_with_explicit_rati
         == 200
     )
     trait = profile(games)["career_profile"]["traits"]["investigation"]
-    assert trait["value"] == pytest.approx(2.2)
+    assert trait["value"] == 1
+    assert trait["questionnaire"] == 5
+    assert trait["game"] == 1
     assert trait["divergent"] is True
 
 
@@ -526,7 +528,8 @@ def test_next_step_respects_ranked_direction_and_mentor_availability(games):
         == 200
     )
     result = profile(games)["career_profile"]
-    assert result["leaders"] == ["backend"]
+    assert result["leaders"] == []
+    assert result["survey_contexts"]["B"]["label"] == "positive"
     quest = games.get(
         f"/quests/{result['next_step']['quest_id']}", headers=headers()
     ).json()
@@ -534,3 +537,26 @@ def test_next_step_respects_ranked_direction_and_mentor_availability(games):
     active = start(games, "code")
     result = profile(games)["career_profile"]
     assert result["next_step"]["quest_id"] == active
+
+
+def test_clear_repeat_preserves_ratings_and_idempotency(games):
+    qid = start(games, "diagnosis")
+    assert action(games, qid, "inspect", "logs").status_code == 200
+    assert action(games, qid, "log", "syntax").status_code == 200
+    url = f"/quests/{qid}/reflection-v2"
+    saved = {
+        "request_id": str(uuid4()),
+        "changes": [{"code": "investigation", "rating": 5}],
+        "repeat": False,
+    }
+    assert games.put(url, headers=headers(), json=saved).status_code == 200
+    assert profile(games)["career_profile"]["repeat"][str(qid)] is False
+    clear = {"request_id": str(uuid4()), "changes": [], "clear_repeat": True}
+    first = games.put(url, headers=headers(), json=clear)
+    assert first.status_code == 200
+    assert games.put(url, headers=headers(), json=clear).json() == first.json()
+    result = profile(games)["career_profile"]
+    assert str(qid) not in result["repeat"]
+    assert result["traits"]["investigation"]["game"] == 5
+    invalid = {**clear, "request_id": str(uuid4()), "repeat": True}
+    assert games.put(url, headers=headers(), json=invalid).status_code == 422

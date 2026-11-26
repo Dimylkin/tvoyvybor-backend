@@ -1,12 +1,17 @@
 """Versioned, explainable career indices from explicit player ratings."""
 
 from collections import defaultdict
+from datetime import datetime
 
 from sqlalchemy import select
 
 from app.activity_profile import LABELS
+from app.career_profile_rules import practice, rounded, survey_contexts
 from app.quest_models import PlayerQuest, QuestDefinition, QuestEvent
 from app.quest_service import QuestService
+from app.questionnaire_catalog_v2 import QUESTIONS_V2
+from app.questionnaire_catalog_v3 import QUESTIONS_V3
+from app.questionnaire_interpretation_v2 import interpret
 from app.questionnaire_service import QuestionnaireService, signals
 
 # Each observed action has an action trait and a subject trait in its own context.
@@ -32,55 +37,6 @@ TRAITS = {
         "verification": ("testing", "data"),
     },
 }
-ROWS = [
-    (
-        "backend",
-        "Backend",
-        {"code": 3, "systems": 3, "fixing": 2, "investigation": 2, "testing": 1},
-    ),
-    (
-        "frontend",
-        "Frontend",
-        {"interfaces": 3, "improvement": 3, "creation": 2, "code": 1, "testing": 1},
-    ),
-    (
-        "analytics",
-        "Аналитика",
-        {"data": 3, "analysis": 3, "patterns": 2, "investigation": 1, "structuring": 1},
-    ),
-    (
-        "fullstack",
-        "Fullstack-разработчик",
-        {"code": 3, "systems": 2, "interfaces": 2, "creation": 2, "testing": 1},
-    ),
-    (
-        "qa",
-        "QA-инженер",
-        {"testing": 3, "details": 2, "investigation": 2, "requirements": 1},
-    ),
-    (
-        "business",
-        "Бизнес-аналитик",
-        {"requirements": 3, "needs": 3, "structuring": 2, "people": 1},
-    ),
-    (
-        "system",
-        "Системный аналитик",
-        {"systems": 3, "requirements": 3, "structuring": 2, "systemic": 1},
-    ),
-    (
-        "uxresearch",
-        "UX-исследователь",
-        {"people": 3, "needs": 3, "analysis": 2, "experiment": 1},
-    ),
-    (
-        "design",
-        "UI/UX-дизайнер",
-        {"interfaces": 3, "improvement": 2, "people": 2, "creative": 1},
-    ),
-]
-
-
 CAREER_DETAILS = {
     "backend": (
         "Создаёт правила и сервисы, которые работают за интерфейсом.",
@@ -134,7 +90,42 @@ def career_profile(session, user_id, old_profile):
     questionnaire = QuestionnaireService(session, user_id)
     state = questionnaire.state()
     completed = state["last_completed"]
-    survey = signals(completed["answers"]) if completed else {}
+    survey = (
+        signals(completed["answers"])
+        if completed and completed["catalog_version"] == 1
+        else {}
+    )
+    survey_result = (
+        interpret(
+            completed["answers"],
+            QUESTIONS_V3 if completed["catalog_version"] == 3 else QUESTIONS_V2,
+        )
+        if completed and completed["catalog_version"] in (2, 3)
+        else None
+    )
+    contexts = survey_contexts(survey_result)
+    if completed and completed["catalog_version"] == 1:
+        # The old catalogue has absolute ratings but no situational context.
+        # Retain it as a limited historical source without treating it as practice.
+        legacy = {
+            "B": ("code", "systems"),
+            "F": ("interfaces",),
+            "D": ("data", "analysis"),
+            "R": ("requirements", "people"),
+        }
+        contexts = {
+            key: {
+                "label": "positive"
+                if sum(survey.get(t, 0) >= 4 for t in traits) >= 2
+                else "insufficient",
+                "positive_questions": [],
+                "negative_questions": [],
+                "neither_questions": [],
+                "absolute_questions": [],
+                "historical": True,
+            }
+            for key, traits in legacy.items()
+        }
     quests = {q.id: q for q in session.scalars(select(QuestDefinition))}
     latest = {}
     repeat = {}
@@ -155,7 +146,9 @@ def career_profile(session, user_id, old_profile):
                 **change,
                 "recorded_at": event.created_at.isoformat(),
             }
-        if event.result.get("repeat") is not None:
+        if event.result.get("clear_repeat"):
+            repeat.pop(quest_id, None)
+        elif event.result.get("repeat") is not None:
             repeat[quest_id] = event.result["repeat"]
     evidence_ids = [
         item["evidence_event_id"]
@@ -177,20 +170,36 @@ def career_profile(session, user_id, old_profile):
     per_quest = defaultdict(lambda: defaultdict(list))
     evidence = defaultdict(list)
     rated_quests = set()
+    observations = []
     for (quest_id, code), item in latest.items():
         quest = quests.get(quest_id)
         if not quest or type(item["rating"]) is not int:
             continue
-        rated_quests.add(quest_id)
         action = action_events.get(item.get("evidence_event_id"))
-        action_time = action.created_at.isoformat() if action else None
+        if action is None:
+            continue
+        rated_quests.add(quest_id)
+        action_time = action.created_at.isoformat()
+        observations.append(
+            {
+                "quest_id": quest_id,
+                "kind": quest.availability_config.get("kind"),
+                "title": quest.title,
+                "code": code,
+                "activity": LABELS.get(code, code),
+                **item,
+            }
+        )
         survey_order = None
         if completed and action_time:
-            survey_order = (
-                "before"
-                if completed["completed_at"][:19] < action_time[:19]
-                else "after"
-            )
+            survey_time = datetime.fromisoformat(completed["completed_at"])
+            event_time = action.created_at
+            if (
+                survey_time.utcoffset() is not None
+                and event_time.utcoffset() is not None
+            ):
+                survey_order = "before" if survey_time < event_time else "after"
+        observations[-1]["questionnaire_order"] = survey_order
         for trait in set(
             TRAITS.get(quest.availability_config.get("kind"), {}).get(code, ())
         ):
@@ -213,13 +222,7 @@ def career_profile(session, user_id, old_profile):
     traits = {}
     for trait in sorted(set(survey) | set(game)):
         q, g = survey.get(trait), game.get(trait)
-        value = (
-            g * 0.7 + q * 0.3
-            if g is not None and q is not None
-            else g
-            if g is not None
-            else q
-        )
+        value = g if g is not None else q
         traits[trait] = {
             "value": value,
             "questionnaire": q,
@@ -227,70 +230,220 @@ def career_profile(session, user_id, old_profile):
             "divergent": q is not None and g is not None and abs(q - g) >= 1.5,
             "evidence": evidence[trait],
         }
-    rows = []
-    for code, title, weights in ROWS:
-        available = [
-            (traits[t]["value"], weight) for t, weight in weights.items() if t in traits
-        ]
-        total = sum(weight for _, weight in available)
-        score = (
-            sum(value * weight for value, weight in available) / total
-            if len(available) >= 2 and total >= sum(weights.values()) / 2
-            else None
+    players = {
+        p.quest_id: p
+        for p in session.scalars(
+            select(PlayerQuest).where(PlayerQuest.user_id == user_id)
         )
-        rows.append(
-            {
-                "code": code,
-                "title": title,
-                "score": score,
-                "traits": [t for t in weights if t in traits],
-                "coverage": total / sum(weights.values()),
-            }
+    }
+    attempted_kinds = {
+        quests[qid].availability_config.get("kind")
+        for qid, player in players.items()
+        if qid in quests and player.status in ("active", "completed")
+    }
+    directions, leaders, conclusion = practice(observations, attempted_kinds, contexts)
+    for direction in directions:
+        direction["repeat_support"] = any(
+            repeat.get(o["quest_id"]) is True and o["rating"] >= 4
+            for trial in direction["trials"]
+            for o in trial["observations"]
         )
-    directions = rows[:3]
-    ranked = sorted(
-        (row for row in directions if row["score"] is not None),
-        key=lambda row: -row["score"],
-    )
-    leaders = (
-        [
-            row["code"]
-            for row in ranked
-            if ranked[0]["score"] - row["score"] <= 0.4 + 1e-9 and row["score"] >= 3.5
-        ][:2]
-        if ranked
-        else []
-    )
-    cards = [
-        dict(row) for row in rows if row["score"] is not None and row["score"] >= 3.5
+        direction["mixed_repeat"] = any(
+            (repeat.get(o["quest_id"]) is False and o["rating"] >= 4)
+            or (repeat.get(o["quest_id"]) is True and o["rating"] <= 2)
+            for trial in direction["trials"]
+            for o in trial["observations"]
+        )
+        direction["divergent"] = bool(
+            leaders
+            and direction["code"] not in leaders
+            and any(
+                v["label"] == "positive" for v in direction["questionnaire"].values()
+            )
+        )
+    # Cards require evidence from the relevant direction, never a shared trait score.
+    cards = []
+    card_specs = [
+        ("backend", "backend", "Backend-разработчик", "B", ("diagnosis", "code")),
+        ("frontend", "frontend", "Frontend-разработчик", "F", ("responsive", "ux")),
+        ("analytics", "analytics", "Аналитик данных", "D", ("data",)),
+        ("business", "analytics", "Бизнес-аналитик", "R", ("interview",)),
     ]
-    cards.sort(
-        key=lambda row: (
-            row["code"] not in ("backend", "frontend", "analytics"),
-            -row["score"],
+    primary_actions = {
+        "diagnosis": {"investigation", "coding"},
+        "code": {"coding"},
+        "responsive": {"interface"},
+        "ux": {"interface"},
+        "data": {"data", "investigation"},
+        "interview": {"requirements", "users"},
+    }
+    for card_code, direction_code, title, context, kinds in card_specs:
+        direction = next(d for d in directions if d["code"] == direction_code)
+        branch = [
+            o
+            for o in observations
+            if o["kind"] in kinds and o["code"] in primary_actions[o["kind"]]
+        ]
+        relevant = [o for o in branch if o["rating"] >= 4]
+        survey_positive = contexts.get(context, {}).get("label") == "positive"
+        branch_score = (
+            rounded(sum(o["rating"] for o in branch) / len(branch)) if branch else None
         )
-    )
-    for card in cards:
-        tasks, skills, exercises = CAREER_DETAILS[card["code"]]
-        card.update(
+        card_score = (
+            branch_score
+            if card_code in ("analytics", "business")
+            else direction["score"]
+        )
+        qualified = (
+            direction["sufficient"]
+            and card_score is not None
+            and card_score >= 3.5
+            and bool(relevant)
+        )
+        first_impressions = (
+            card_code in ("analytics", "business") and len(relevant) >= 2
+        )
+        if not (qualified or first_impressions or survey_positive):
+            continue
+        tasks, skills, exercises = CAREER_DETAILS[card_code]
+        cards.append(
             {
-                "title": {
-                    "backend": "Backend-разработчик",
-                    "frontend": "Frontend-разработчик",
-                    "analytics": "Аналитик данных",
-                }.get(card["code"], card["title"]),
+                "code": card_code,
+                "title": title,
+                "score": card_score
+                if relevant and (qualified or first_impressions)
+                else None,
+                "traits": [],
+                "coverage": direction["coverage"],
                 "tasks": tasks,
                 "skills": skills,
                 "exercises": exercises,
-                "represented": card["code"] in ("backend", "frontend", "analytics"),
-                "evidence": [
-                    item for trait in card["traits"] for item in evidence[trait]
-                ],
+                "represented": True,
+                "evidence": relevant,
+                "basis": "practice"
+                if qualified or first_impressions
+                else "questionnaire",
+            }
+        )
+
+    positive_sources = defaultdict(set)
+    if survey_result:
+        for trait, data in survey_result["comparative"].items():
+            positive_sources[trait].update(
+                f"q:{item['question_id']}"
+                for item in data["evidence"]
+                if item["value"] > 0
+            )
+        for trait, questions in survey_result["choices"].items():
+            positive_sources[trait].update(f"q:{qid}" for qid in questions)
+        for qid, data in survey_result["absolute"].items():
+            if data["value"] >= 4:
+                for trait in data["signals"]:
+                    positive_sources[trait].add(f"q:{qid}")
+    for observation in observations:
+        if observation["rating"] < 4:
+            continue
+        source = f"quest:{observation['quest_id']}"
+        for trait in TRAITS.get(observation["kind"], {}).get(observation["code"], ()):
+            positive_sources[trait].add(source)
+        if observation["kind"] in ("diagnosis", "code") and observation["code"] in (
+            "coding",
+            "investigation",
+        ):
+            positive_sources["B"].add(source)
+        if (
+            observation["kind"] in ("responsive", "ux")
+            and observation["code"] == "interface"
+        ):
+            positive_sources["F"].add(source)
+        if observation["code"] == "verification":
+            positive_sources["software"].add(source)
+        if observation["kind"] == "ux" and observation["code"] == "users":
+            positive_sources["user_research"].add(source)
+    adjacent = [
+        (
+            "fullstack",
+            "Fullstack-разработчик",
+            ("B",),
+            ("F",),
+        ),
+        ("qa", "QA-инженер", ("testing",), ("testing",)),
+        ("system", "Системный аналитик", ("systems",), ("R", "requirements")),
+        ("uxresearch", "UX-исследователь", ("user_research",), ("needs", "people")),
+        (
+            "design",
+            "UI/UX-дизайнер",
+            ("F", "interfaces"),
+            ("needs", "people", "user_research"),
+        ),
+    ]
+    for code, title, left, right in adjacent:
+        left_sources = set().union(*(positive_sources[t] for t in left))
+        right_sources = set().union(*(positive_sources[t] for t in right))
+        if code == "fullstack":
+            right_sources &= (
+                positive_sources["improvement"] | positive_sources["creation"]
+            )
+        pairs = [(a, b) for a in left_sources for b in right_sources if a != b]
+        if code == "qa":
+            pairs = [
+                (a, b)
+                for a, b in pairs
+                if a in positive_sources["software"]
+                or b in positive_sources["software"]
+            ]
+        if not pairs:
+            continue
+        tasks, skills, exercises = CAREER_DETAILS[code]
+        ids = set(sorted(pairs)[0])
+        related = [
+            o
+            for o in observations
+            if f"quest:{o['quest_id']}" in ids and o["rating"] >= 4
+        ]
+        question_contexts = {
+            q["id"]: q.get("context", q["text"]) for q in [*QUESTIONS_V2, *QUESTIONS_V3]
+        }
+        explanations = [
+            question_contexts[source[2:]]
+            for source in sorted(ids)
+            if source.startswith("q:") and source[2:] in question_contexts
+        ]
+        cards.append(
+            {
+                "code": code,
+                "title": title,
+                "score": None,
+                "traits": [],
+                "coverage": 0,
+                "tasks": tasks,
+                "skills": skills,
+                "exercises": exercises,
+                "represented": False,
+                "basis": "combined",
+                "evidence": related,
+                "source_ids": sorted(ids),
+                "question_contexts": explanations,
             }
         )
 
     next_step = None
-    if leaders:
+    suggested = leaders or [
+        d["code"] for d in directions if d["score"] is not None and d["score"] >= 3.5
+    ]
+    if not suggested:
+        suggested = [
+            d["code"]
+            for d in directions
+            if any(v["label"] == "positive" for v in d["questionnaire"].values())
+        ]
+    if conclusion == "local":
+        suggested += [
+            d["code"]
+            for d in directions
+            if not d["sufficient"] and d["code"] not in suggested
+        ]
+    if suggested:
         service = QuestService(session, user_id)
         players = {
             p.quest_id: p
@@ -298,7 +451,7 @@ def career_profile(session, user_id, old_profile):
                 select(PlayerQuest).where(PlayerQuest.user_id == user_id)
             )
         }
-        for direction in leaders:
+        for direction in suggested:
             candidates = sorted(
                 (
                     q
@@ -334,19 +487,53 @@ def career_profile(session, user_id, old_profile):
                 break
     elif not traits:
         next_step = old_profile["next_step"]
+    hard = any(
+        o["rating"] <= 2 and o.get("reason") in ("difficulty", "knowledge", "interface")
+        for o in observations
+    )
+    mixed = any(d["mixed_repeat"] for d in directions)
+    if next_step and hard:
+        next_step["explanation"] += (
+            " Начни с более простого примера: сложность могла повлиять на впечатление."
+        )
+    if next_step and mixed:
+        next_step["explanation"] += (
+            " Сравни впечатление от задания с желанием его повторить."
+        )
+    if next_step is None and suggested:
+        exercises = {
+            "backend": "Напиши простую функцию или попробуй API.",
+            "frontend": "Сделай адаптивную форму и проверь её на двух экранах.",
+            "analytics": " ".join(
+                ["Сравни группы данных", "или проведи интервью и опиши требования."]
+            ),
+        }
+        next_step = {
+            "quest_id": None,
+            "title": "Небольшая самостоятельная проба",
+            "explanation": exercises[suggested[0]],
+        }
+        if hard:
+            next_step["explanation"] += " Начни с простого примера."
+        if mixed:
+            next_step["explanation"] += " Сравни впечатления и желание повторить."
     return {
-        "version": 2,
+        "version": 3,
         "status": "empty"
-        if not traits
+        if conclusion == "empty"
         else "established"
-        if len(rated_quests) >= 2 and leaders
+        if conclusion in ("leaders", "weak", "no_clear_direction")
         else "preliminary",
+        "conclusion": conclusion,
+        "survey_contexts": contexts,
+        "survey_available": completed is not None,
+        "survey_results": survey_result,
         "rated_quests": len(rated_quests),
         "questionnaire": state,
         "traits": traits,
         "directions": directions,
         "leaders": leaders,
-        "careers": cards[:3],
+        "careers": cards,
         "history": old_profile["history"],
         "reflections": [
             {"quest_id": qid, "code": code, **item}

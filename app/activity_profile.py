@@ -509,12 +509,16 @@ def activity_profile(session, user_id):
     }
 
 
-def save_reflection_v2(service, quest_id, request_id, changes, repeat):
+def save_reflection_v2(
+    service, quest_id, request_id, changes, repeat, clear_repeat=False
+):
     """Apply only explicitly submitted values backed by current-run actions."""
     service.repo.lock_user(service.user_id)
     quest = service.definition(quest_id)
     target = f"quest:{quest_id}"
     payload = {"changes": changes, "repeat": repeat}
+    if clear_repeat:
+        payload["clear_repeat"] = True
     previous = service.repo.event(service.user_id, request_id)
     if previous:
         if (previous.event_type, previous.target_key, previous.payload) != (
@@ -552,6 +556,8 @@ def save_reflection_v2(service, quest_id, request_id, changes, repeat):
         ],
         "repeat": repeat,
     }
+    if clear_repeat:
+        result["clear_repeat"] = True
     service.session.add(
         QuestEvent(
             user_id=service.user_id,

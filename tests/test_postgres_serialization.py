@@ -239,3 +239,90 @@ def test_questionnaire_conflicting_revisions_are_serialized():
                 cleanup.query(User).filter_by(id=user_id).delete()
                 cleanup.commit()
         engine.dispose()
+
+
+@pytest.mark.skipif(not POSTGRES_URL, reason="TEST_POSTGRES_URL is not configured")
+def test_questionnaire_concurrent_revision_and_exact_retry() -> None:
+    from fastapi import HTTPException
+    from sqlalchemy import delete, select
+
+    from app.questionnaire_models import (
+        QuestionnaireAnswer,
+        QuestionnaireAttempt,
+        QuestionnaireOperation,
+    )
+    from app.questionnaire_service import QuestionnaireService
+
+    engine = create_engine(POSTGRES_URL, pool_pre_ping=True)
+    email = f"questionnaire-{uuid4()}@example.test"
+    try:
+        with Session(engine) as session:
+            user = User(email=email, password_hash="test-hash")
+            session.add(user)
+            session.commit()
+            user_id = user.id
+            service = QuestionnaireService(session, user_id)
+            start, _ = service.execute(
+                str(uuid4()),
+                "start",
+                {"retake": False, "catalog_version": 2},
+                lambda: service.start(False, 2),
+            )
+            attempt_id = start["id"]
+        ids = [str(uuid4()), str(uuid4())]
+        payload = {
+            "attempt_id": attempt_id,
+            "expected_revision": 0,
+            "current_question_id": "V2Q02",
+            "answer": {
+                "question_id": "V2Q01",
+                "answer": {"status": "answered", "value": 0},
+            },
+        }
+
+        def save(key):
+            with Session(engine) as session:
+                service = QuestionnaireService(session, user_id)
+                try:
+                    result, _ = service.execute(
+                        key,
+                        "progress",
+                        payload,
+                        lambda: service.progress(
+                            attempt_id, 0, "V2Q02", payload["answer"]
+                        ),
+                    )
+                    return result
+                except HTTPException as exc:
+                    assert exc.status_code == 409
+                    return None
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(save, ids))
+        assert sum(result is not None for result in results) == 1
+        winner = next(i for i, result in enumerate(results) if result is not None)
+        assert save(ids[winner]) == results[winner]
+    finally:
+        with Session(engine) as session:
+            session.execute(
+                delete(QuestionnaireAnswer).where(
+                    QuestionnaireAnswer.attempt_id.in_(
+                        select(QuestionnaireAttempt.id).where(
+                            QuestionnaireAttempt.user_id == user_id
+                        )
+                    )
+                )
+            )
+            session.execute(
+                delete(QuestionnaireOperation).where(
+                    QuestionnaireOperation.user_id == user_id
+                )
+            )
+            session.execute(
+                delete(QuestionnaireAttempt).where(
+                    QuestionnaireAttempt.user_id == user_id
+                )
+            )
+            session.execute(delete(User).where(User.id == user_id))
+            session.commit()
+        engine.dispose()

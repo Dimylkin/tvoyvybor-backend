@@ -243,9 +243,12 @@ class ReflectionV2Input(BaseModel):
     request_id: UUID
     changes: list[ReflectionV2Change] = Field(max_length=20)
     repeat: bool | None = None
+    clear_repeat: bool = False
 
     @model_validator(mode="after")
     def unique_codes(self):
+        if self.clear_repeat and self.repeat is not None:
+            raise ValueError("Cannot set and clear repeat together")
         if len({item.code for item in self.changes}) != len(self.changes):
             raise ValueError("Duplicate activity code")
         return self
@@ -263,4 +266,5 @@ def reflection_v2(
         str(data.request_id),
         [item.model_dump() for item in data.changes],
         data.repeat,
+        data.clear_repeat,
     )

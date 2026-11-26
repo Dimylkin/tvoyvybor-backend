@@ -8,8 +8,8 @@ from sqlalchemy.orm import Session
 from app.auth_api import current_user
 from app.database import get_session
 from app.models import User
-from app.questionnaire_catalog import CATALOG_VERSION, QUESTIONS
-from app.questionnaire_service import QuestionnaireService, validate_answer
+from app.questionnaire_catalog import CATALOG_VERSION
+from app.questionnaire_service import CATALOGS, QuestionnaireService, public_catalog
 
 router = APIRouter(prefix="/questionnaire", tags=["questionnaire"])
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -23,6 +23,7 @@ class Input(BaseModel):
 
 class Start(Input):
     retake: bool = False
+    catalog_version: int = 1
 
 
 class AnswerUpdate(BaseModel):
@@ -43,14 +44,22 @@ class Complete(Input):
 
 @router.get("/catalog")
 def catalog(user: UserDep, version: int = CATALOG_VERSION):
-    if version != CATALOG_VERSION:
+    if version not in CATALOGS:
         raise HTTPException(404, "Каталог не найден")
-    return {"version": CATALOG_VERSION, "questions": QUESTIONS}
+    return {
+        "version": version,
+        "questions": public_catalog(version) if version != 1 else CATALOGS[1],
+    }
 
 
 @router.get("/state")
-def state(session: SessionDep, user: UserDep):
-    return QuestionnaireService(session, user.id).state()
+def state(session: SessionDep, user: UserDep, version: int = 1, history: bool = False):
+    if version not in CATALOGS:
+        raise HTTPException(404, "Каталог не найден")
+    result = QuestionnaireService(session, user.id).state(history)
+    if result["current"] and result["current"]["catalog_version"] > version:
+        raise HTTPException(409, "Обновите приложение, чтобы продолжить опрос")
+    return result
 
 
 def execute(service, data, operation, payload, callback, response):
@@ -63,8 +72,15 @@ def execute(service, data, operation, payload, callback, response):
 def start(data: Start, response: Response, session: SessionDep, user: UserDep):
     service = QuestionnaireService(session, user.id)
     payload = {"retake": data.retake}
+    if data.catalog_version != 1:
+        payload["catalog_version"] = data.catalog_version
     return execute(
-        service, data, "start", payload, lambda: service.start(data.retake), response
+        service,
+        data,
+        "start",
+        payload,
+        lambda: service.start(data.retake, data.catalog_version),
+        response,
     )
 
 
@@ -79,7 +95,17 @@ def progress(
     service = QuestionnaireService(session, user.id)
     update = data.answer.model_dump(mode="json") if data.answer else None
     if update is not None:
-        update["answer"] = validate_answer(update["question_id"], update["answer"])
+        answer = update["answer"]
+        # Preserve the canonical representation of already stored v1 operations.
+        if (
+            answer.get("status") in ("skipped", "unsure")
+            and answer.get("value") is None
+        ):
+            answer["value"] = None
+        if isinstance(answer.get("value"), list) and all(
+            isinstance(v, str) for v in answer["value"]
+        ):
+            answer["value"] = sorted(answer["value"])
     payload = {
         "attempt_id": attempt_id,
         "expected_revision": data.expected_revision,
